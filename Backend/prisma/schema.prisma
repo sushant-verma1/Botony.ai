@@ -1,0 +1,56 @@
+// This is your Prisma schema file,
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+datasource db {
+  provider = "postgresql"
+}
+
+// Users table
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  firstName String?
+  lastName  String?
+  isPremium Boolean  @default(false)
+  
+  conversations Conversation[]
+  messages      Message[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Conversations table
+model Conversation {
+  id     String @id @default(cuid())
+  title  String?
+  status String @default("ongoing")
+  
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  messages Message[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Messages table
+model Message {
+  id                String  @id @default(cuid())
+  content           String
+  role              String  // "user" or "assistant"
+  emergencyDetected Boolean @default(false)
+  isPremiumKept     Boolean @default(false)
+  
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+}
