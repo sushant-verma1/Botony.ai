@@ -30,7 +30,7 @@ export type UserMinAggregateOutputType = {
   password: string | null
   firstName: string | null
   lastName: string | null
-  isPremium: boolean | null
+  plan: $Enums.Plan | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -41,7 +41,7 @@ export type UserMaxAggregateOutputType = {
   password: string | null
   firstName: string | null
   lastName: string | null
-  isPremium: boolean | null
+  plan: $Enums.Plan | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -52,7 +52,7 @@ export type UserCountAggregateOutputType = {
   password: number
   firstName: number
   lastName: number
-  isPremium: number
+  plan: number
   createdAt: number
   updatedAt: number
   _all: number
@@ -65,7 +65,7 @@ export type UserMinAggregateInputType = {
   password?: true
   firstName?: true
   lastName?: true
-  isPremium?: true
+  plan?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -76,7 +76,7 @@ export type UserMaxAggregateInputType = {
   password?: true
   firstName?: true
   lastName?: true
-  isPremium?: true
+  plan?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -87,7 +87,7 @@ export type UserCountAggregateInputType = {
   password?: true
   firstName?: true
   lastName?: true
-  isPremium?: true
+  plan?: true
   createdAt?: true
   updatedAt?: true
   _all?: true
@@ -171,7 +171,7 @@ export type UserGroupByOutputType = {
   password: string
   firstName: string | null
   lastName: string | null
-  isPremium: boolean
+  plan: $Enums.Plan
   createdAt: Date
   updatedAt: Date
   _count: UserCountAggregateOutputType | null
@@ -203,7 +203,7 @@ export type UserWhereInput = {
   password?: Prisma.StringFilter<"User"> | string
   firstName?: Prisma.StringNullableFilter<"User"> | string | null
   lastName?: Prisma.StringNullableFilter<"User"> | string | null
-  isPremium?: Prisma.BoolFilter<"User"> | boolean
+  plan?: Prisma.EnumPlanFilter<"User"> | $Enums.Plan
   createdAt?: Prisma.DateTimeFilter<"User"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"User"> | Date | string
   conversations?: Prisma.ConversationListRelationFilter
@@ -216,7 +216,7 @@ export type UserOrderByWithRelationInput = {
   password?: Prisma.SortOrder
   firstName?: Prisma.SortOrderInput | Prisma.SortOrder
   lastName?: Prisma.SortOrderInput | Prisma.SortOrder
-  isPremium?: Prisma.SortOrder
+  plan?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   conversations?: Prisma.ConversationOrderByRelationAggregateInput
@@ -232,7 +232,7 @@ export type UserWhereUniqueInput = Prisma.AtLeast<{
   password?: Prisma.StringFilter<"User"> | string
   firstName?: Prisma.StringNullableFilter<"User"> | string | null
   lastName?: Prisma.StringNullableFilter<"User"> | string | null
-  isPremium?: Prisma.BoolFilter<"User"> | boolean
+  plan?: Prisma.EnumPlanFilter<"User"> | $Enums.Plan
   createdAt?: Prisma.DateTimeFilter<"User"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"User"> | Date | string
   conversations?: Prisma.ConversationListRelationFilter
@@ -245,7 +245,7 @@ export type UserOrderByWithAggregationInput = {
   password?: Prisma.SortOrder
   firstName?: Prisma.SortOrderInput | Prisma.SortOrder
   lastName?: Prisma.SortOrderInput | Prisma.SortOrder
-  isPremium?: Prisma.SortOrder
+  plan?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   _count?: Prisma.UserCountOrderByAggregateInput
@@ -262,7 +262,7 @@ export type UserScalarWhereWithAggregatesInput = {
   password?: Prisma.StringWithAggregatesFilter<"User"> | string
   firstName?: Prisma.StringNullableWithAggregatesFilter<"User"> | string | null
   lastName?: Prisma.StringNullableWithAggregatesFilter<"User"> | string | null
-  isPremium?: Prisma.BoolWithAggregatesFilter<"User"> | boolean
+  plan?: Prisma.EnumPlanWithAggregatesFilter<"User"> | $Enums.Plan
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"User"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"User"> | Date | string
 }
@@ -273,7 +273,7 @@ export type UserCreateInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
   conversations?: Prisma.ConversationCreateNestedManyWithoutUserInput
@@ -286,7 +286,7 @@ export type UserUncheckedCreateInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutUserInput
@@ -299,7 +299,7 @@ export type UserUpdateInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   conversations?: Prisma.ConversationUpdateManyWithoutUserNestedInput
@@ -312,7 +312,7 @@ export type UserUncheckedUpdateInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutUserNestedInput
@@ -325,7 +325,7 @@ export type UserCreateManyInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
 }
@@ -336,7 +336,7 @@ export type UserUpdateManyMutationInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -347,7 +347,7 @@ export type UserUncheckedUpdateManyInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -358,7 +358,7 @@ export type UserCountOrderByAggregateInput = {
   password?: Prisma.SortOrder
   firstName?: Prisma.SortOrder
   lastName?: Prisma.SortOrder
-  isPremium?: Prisma.SortOrder
+  plan?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -369,7 +369,7 @@ export type UserMaxOrderByAggregateInput = {
   password?: Prisma.SortOrder
   firstName?: Prisma.SortOrder
   lastName?: Prisma.SortOrder
-  isPremium?: Prisma.SortOrder
+  plan?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -380,7 +380,7 @@ export type UserMinOrderByAggregateInput = {
   password?: Prisma.SortOrder
   firstName?: Prisma.SortOrder
   lastName?: Prisma.SortOrder
-  isPremium?: Prisma.SortOrder
+  plan?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -398,8 +398,8 @@ export type NullableStringFieldUpdateOperationsInput = {
   set?: string | null
 }
 
-export type BoolFieldUpdateOperationsInput = {
-  set?: boolean
+export type EnumPlanFieldUpdateOperationsInput = {
+  set?: $Enums.Plan
 }
 
 export type DateTimeFieldUpdateOperationsInput = {
@@ -440,7 +440,7 @@ export type UserCreateWithoutConversationsInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
   messages?: Prisma.MessageCreateNestedManyWithoutUserInput
@@ -452,7 +452,7 @@ export type UserUncheckedCreateWithoutConversationsInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
   messages?: Prisma.MessageUncheckedCreateNestedManyWithoutUserInput
@@ -480,7 +480,7 @@ export type UserUpdateWithoutConversationsInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   messages?: Prisma.MessageUpdateManyWithoutUserNestedInput
@@ -492,7 +492,7 @@ export type UserUncheckedUpdateWithoutConversationsInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   messages?: Prisma.MessageUncheckedUpdateManyWithoutUserNestedInput
@@ -504,7 +504,7 @@ export type UserCreateWithoutMessagesInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
   conversations?: Prisma.ConversationCreateNestedManyWithoutUserInput
@@ -516,7 +516,7 @@ export type UserUncheckedCreateWithoutMessagesInput = {
   password: string
   firstName?: string | null
   lastName?: string | null
-  isPremium?: boolean
+  plan?: $Enums.Plan
   createdAt?: Date | string
   updatedAt?: Date | string
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutUserInput
@@ -544,7 +544,7 @@ export type UserUpdateWithoutMessagesInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   conversations?: Prisma.ConversationUpdateManyWithoutUserNestedInput
@@ -556,7 +556,7 @@ export type UserUncheckedUpdateWithoutMessagesInput = {
   password?: Prisma.StringFieldUpdateOperationsInput | string
   firstName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   lastName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
-  isPremium?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  plan?: Prisma.EnumPlanFieldUpdateOperationsInput | $Enums.Plan
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutUserNestedInput
@@ -608,7 +608,7 @@ export type UserSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = r
   password?: boolean
   firstName?: boolean
   lastName?: boolean
-  isPremium?: boolean
+  plan?: boolean
   createdAt?: boolean
   updatedAt?: boolean
   conversations?: boolean | Prisma.User$conversationsArgs<ExtArgs>
@@ -622,7 +622,7 @@ export type UserSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensio
   password?: boolean
   firstName?: boolean
   lastName?: boolean
-  isPremium?: boolean
+  plan?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["user"]>
@@ -633,7 +633,7 @@ export type UserSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensio
   password?: boolean
   firstName?: boolean
   lastName?: boolean
-  isPremium?: boolean
+  plan?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["user"]>
@@ -644,12 +644,12 @@ export type UserSelectScalar = {
   password?: boolean
   firstName?: boolean
   lastName?: boolean
-  isPremium?: boolean
+  plan?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type UserOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "email" | "password" | "firstName" | "lastName" | "isPremium" | "createdAt" | "updatedAt", ExtArgs["result"]["user"]>
+export type UserOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "email" | "password" | "firstName" | "lastName" | "plan" | "createdAt" | "updatedAt", ExtArgs["result"]["user"]>
 export type UserInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   conversations?: boolean | Prisma.User$conversationsArgs<ExtArgs>
   messages?: boolean | Prisma.User$messagesArgs<ExtArgs>
@@ -670,7 +670,7 @@ export type $UserPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs =
     password: string
     firstName: string | null
     lastName: string | null
-    isPremium: boolean
+    plan: $Enums.Plan
     createdAt: Date
     updatedAt: Date
   }, ExtArgs["result"]["user"]>
@@ -1103,7 +1103,7 @@ export interface UserFieldRefs {
   readonly password: Prisma.FieldRef<"User", 'String'>
   readonly firstName: Prisma.FieldRef<"User", 'String'>
   readonly lastName: Prisma.FieldRef<"User", 'String'>
-  readonly isPremium: Prisma.FieldRef<"User", 'Boolean'>
+  readonly plan: Prisma.FieldRef<"User", 'Plan'>
   readonly createdAt: Prisma.FieldRef<"User", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"User", 'DateTime'>
 }
