@@ -4,9 +4,9 @@
   "description": "A safe, AI-powered medical information assistant designed to provide **educational health guidance** with strict safety guardrails.",
   "main": "index.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
-    "test": "jest"
+    "start": "tsx server.ts",
+    "server": "nodemon --exec tsx server.ts",
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +14,7 @@
   "type": "module",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
+    "@clerk/express": "^2.0.7",
     "@prisma/adapter-pg": "^7.6.0",
     "axios": "^1.13.6",
     "cors": "^2.8.6",
@@ -27,7 +28,9 @@
   },
   "devDependencies": {
     "@prisma/client": "^7.6.0",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/morgan": "^1.9.10",
     "@types/node": "^25.5.0",
     "@types/pg": "^8.20.0",
     "eslint": "^10.1.0",
@@ -35,6 +38,7 @@
     "nodemon": "^3.1.14",
     "npm": "^11.12.1",
     "prisma": "^7.6.0",
+    "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   }
