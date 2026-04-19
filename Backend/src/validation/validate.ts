@@ -12,12 +12,15 @@ export const createUserSchema = Joi.object({
   plan: Joi.string().valid("ADVISOR", "PERSONAL", "FRIEND").default("ADVISOR"),
 });
 
+export const loginSchema = Joi.object({
+  email: Joi.string().email().required(),
+  password: Joi.string().min(8).required(),
+});
+
 export const createConversationSchema = Joi.object({
   title: Joi.string().max(100).optional(),
 
-  status: Joi.string()
-    .valid("ONGOING", "COMPLETED")
-    .default("ONGOING"),
+  status: Joi.string().valid("ONGOING", "COMPLETED").default("ONGOING"),
 
   userId: Joi.string().required(),
 });
