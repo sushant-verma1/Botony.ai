@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { verifyToken } from "../utils/auth.util.js";
+import { verifyAccessToken } from "../utils/auth.util.js";
 
 export const protect = async (
   req: Request,
@@ -7,11 +7,19 @@ export const protect = async (
   next: NextFunction,
 ) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1];
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res.status(401).json({
+        message: "Token not found",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
     if (!token) {
       return res.status(401).json({ message: "token not found" });
     }
-    const decoded = verifyToken(token);
+    const decoded = verifyAccessToken(token);
 
     if (!decoded) {
       return res.status(401).json({

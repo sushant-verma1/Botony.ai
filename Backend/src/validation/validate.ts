@@ -27,14 +27,4 @@ export const createConversationSchema = Joi.object({
 
 export const createMessageSchema = Joi.object({
   content: Joi.string().min(1).required(),
-
-  role: Joi.string().valid("USER", "ASSISTANT").required(),
-
-  emergencyDetected: Joi.boolean().optional(),
-
-  isPremiumKept: Joi.boolean().optional(),
-
-  conversationId: Joi.string().required(),
-
-  userId: Joi.string().required(),
 });

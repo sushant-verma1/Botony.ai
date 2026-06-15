@@ -1,4 +1,4 @@
-import { Request } from "express";
+import type { TokenPayload } from "./auth.js";
 
 declare global {
   namespace Express {
@@ -9,7 +9,8 @@ declare global {
       };
       plan?: string;
       file: any;
-      user: any;
+      user: TokenPayload;
     }
   }
 }
+export {};

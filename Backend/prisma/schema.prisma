@@ -12,6 +12,11 @@ enum Plan {
   FRIEND
 }
 
+enum Role {
+  user
+  assistant
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -47,7 +52,7 @@ model Conversation {
 model Message {
   id                String  @id @default(cuid())
   content           String
-  role              String  // "user" or "assistant"
+  role              Role
   emergencyDetected Boolean @default(false)
   isPremiumKept     Boolean @default(false)
   

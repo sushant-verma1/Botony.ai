@@ -3,6 +3,7 @@ import {
   registerController,
   loginController,
   logoutController,
+  refreshController,
 } from "../controllers/auth.controller.js";
 import { validate } from "../middleware/validate.middleware.js";
 import {createUserSchema , loginSchema} from "../validation/validate.js";
@@ -13,8 +14,5 @@ const authRouter = Express.Router();
 authRouter.post("/login", validate(loginSchema), loginController);
 authRouter.post("/register", validate(createUserSchema), registerController);
 authRouter.post("/logout", protect, logoutController);
-// authRouter.get("/protected",protect ,(req, res) => {
-//   res.json({ message: "This is a protected route" });
-// })
-
+authRouter.post("/refresh" , refreshController);
 export default authRouter;

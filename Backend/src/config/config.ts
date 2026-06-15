@@ -9,6 +9,8 @@ function getEnv(name: string): string {
 }
 
 const connectionString = getEnv("DATABASE_URL");
-const jwtSecret = getEnv("JWT_SECRET");
+const accessTokenSecret = getEnv("ACCESS_TOKEN_SECRET");
+const refreshTokenSecret = getEnv("REFRESH_TOKEN_SECRET");
+const claudeKey = getEnv("ANTHROPIC_API_KEY");
 
-export { connectionString, jwtSecret };
+export { connectionString, accessTokenSecret, refreshTokenSecret, claudeKey };
