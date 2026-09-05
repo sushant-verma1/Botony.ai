@@ -3,6 +3,7 @@ import type {
   NewChatResponse,
   SendMessageResponse,
   HistoryResponse,
+  ConversationsResponse,
 } from '../../types/chat'
 
 export const chatAPI = {
@@ -15,8 +16,23 @@ export const chatAPI = {
       { content: message }
     ),
 
-  getHistory: (conversationId: string) =>
-    api.get<HistoryResponse>(
-      `/chat/${conversationId}/history`
+  getHistory: (
+    conversationId: string,
+    params?: { before?: string; limit?: number },
+  ) =>
+    api.get<HistoryResponse>(`/chat/${conversationId}/history`, {
+      params,
+    }),
+
+  getConversations: () =>
+    api.get<ConversationsResponse>('/chat/conversations'),
+
+  deleteConversation: (conversationId: string) =>
+    api.delete<{ message: string }>(`/chat/${conversationId}`),
+
+  renameConversation: (conversationId: string, title: string) =>
+    api.patch<{ conversationId: string; title: string }>(
+      `/chat/${conversationId}`,
+      { title },
     ),
 }

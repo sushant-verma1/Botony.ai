@@ -1,0 +1,431 @@
+/* ------------------------------------------------------------------------
+   Landing page.
+
+   The system is deliberately thin: one measure, one rhythm (--section), one
+   rule colour, and hairlines instead of cards. Nothing is elevated, nothing
+   is tinted, and there is no second accent — the only saturated thing on the
+   page is the character, which is the point.
+   --------------------------------------------------------------------- */
+
+.landing {
+  position: relative; /* containing block for the floating nav */
+  --measure: 1160px;
+}
+
+/* Every block shares one column so the left edge is unbroken from the nav to
+   the footer. Optical alignment beats decoration on a page this quiet. */
+.nav,
+.section,
+.cta,
+.footer {
+  width: min(var(--measure), 100% - var(--gutter) * 2);
+  margin-inline: auto;
+}
+
+/* ---- navigation -------------------------------------------------------- */
+
+/* Sits over the blank first viewport rather than above it, so the hero really
+   does start empty. It is not sticky: a bar following you down the page would
+   undercut the stillness the animation is trying to buy. */
+.nav {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 26px 0;
+}
+
+.nav__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.nav__mark {
+  width: 26px;
+  height: auto;
+  color: var(--ink);
+}
+
+.nav__wordmark {
+  font-family: var(--serif);
+  font-size: 19px;
+  letter-spacing: -0.012em;
+}
+
+.nav__links {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  font-size: 14px;
+}
+
+.nav__links a {
+  text-decoration: none;
+  opacity: 0.66;
+  transition: opacity 160ms ease;
+}
+
+.nav__links a:hover {
+  opacity: 1;
+}
+
+.nav__cta {
+  padding: 9px 18px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--surface);
+  opacity: 1 !important; /* the pill reads as a control, not a link */
+  transition: transform 160ms ease;
+}
+
+.nav__cta:hover {
+  transform: translateY(-1px);
+}
+
+/* ---- shared type ------------------------------------------------------- */
+
+.eyebrow {
+  margin: 0 0 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.45;
+}
+
+.display {
+  margin: 0;
+  max-width: 19ch;
+  font-family: var(--serif);
+  font-size: clamp(34px, 5.2vw, 62px);
+  font-weight: 400;
+  line-height: 1.08;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.heading {
+  margin: 0;
+  max-width: 22ch;
+  font-family: var(--serif);
+  font-size: clamp(27px, 3.4vw, 40px);
+  font-weight: 400;
+  line-height: 1.16;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.lede {
+  margin: 28px 0 0;
+  max-width: 62ch;
+  font-size: clamp(16.5px, 1.35vw, 19px);
+  line-height: 1.66;
+  opacity: 0.74;
+  text-wrap: pretty;
+}
+
+.lede--narrow {
+  max-width: 52ch;
+}
+
+.note {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  opacity: 0.5;
+  max-width: 54ch;
+}
+
+/* ---- sections ---------------------------------------------------------- */
+
+.section {
+  padding-block: var(--section);
+  border-top: 1px solid var(--line);
+}
+
+/* The first written block after the hero carries no rule: the animation
+   already ended on empty space, and a line there would fence it in. */
+.section--lead {
+  border-top: 0;
+  padding-top: clamp(40px, 6vh, 80px);
+}
+
+/* ---- how it works ------------------------------------------------------ */
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  margin: clamp(48px, 6vw, 76px) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Hairlines between the steps rather than boxes around them — the sequence is
+   the content, and a divider says "then" where a card would say "and". */
+.step {
+  padding: 0 clamp(24px, 3vw, 40px);
+  border-left: 1px solid var(--line);
+}
+
+.step:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.step__index {
+  display: block;
+  margin-bottom: 18px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  opacity: 0.38;
+}
+
+.step__title {
+  margin: 0 0 12px;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: -0.008em;
+}
+
+.step__body {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.62;
+  opacity: 0.68;
+  text-wrap: pretty;
+}
+
+/* ---- capabilities ------------------------------------------------------ */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  column-gap: clamp(32px, 5vw, 88px);
+  row-gap: 0;
+  margin: clamp(48px, 6vw, 76px) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grid__item {
+  padding-block: clamp(28px, 3vw, 38px);
+  border-top: 1px solid var(--line);
+}
+
+.grid__title {
+  margin: 0 0 10px;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: -0.008em;
+}
+
+.grid__body {
+  margin: 0;
+  max-width: 42ch;
+  font-size: 15px;
+  line-height: 1.62;
+  opacity: 0.68;
+  text-wrap: pretty;
+}
+
+/* ---- safety ------------------------------------------------------------ */
+
+.limits {
+  margin: clamp(40px, 5vw, 64px) 0 40px;
+  padding: 0;
+  list-style: none;
+  max-width: 58ch;
+}
+
+/* A rule per line, no bullets: the list reads as a series of statements
+   rather than as features, which is the tone this section needs. */
+.limits__item {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: clamp(16px, 1.5vw, 18.5px);
+  letter-spacing: -0.008em;
+}
+
+.limits__item:first-child {
+  border-top: 1px solid var(--line);
+}
+
+/* ---- call to action ---------------------------------------------------- */
+
+.cta {
+  padding-block: clamp(96px, 15vh, 184px);
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+
+.display--cta {
+  max-width: none;
+  margin-inline: auto;
+}
+
+.cta__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px 28px;
+  margin: clamp(36px, 4vw, 52px) 0 28px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  font-size: 15px;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.button--solid {
+  padding: 14px 30px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.button--solid:hover {
+  transform: translateY(-1px);
+}
+
+.button--quiet {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  opacity: 0.62;
+}
+
+.button--quiet:hover {
+  opacity: 1;
+  border-bottom-color: var(--ink);
+}
+
+.note--cta {
+  margin-inline: auto;
+  text-align: center;
+}
+
+/* ---- footer ------------------------------------------------------------ */
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px 32px;
+  padding-block: 40px 56px;
+  border-top: 1px solid var(--line);
+}
+
+.footer__mark {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 17px;
+  letter-spacing: -0.012em;
+}
+
+.footer__links {
+  display: flex;
+  gap: 24px;
+  font-size: 14px;
+}
+
+.footer__links a {
+  text-decoration: none;
+  opacity: 0.6;
+  transition: opacity 160ms ease;
+}
+
+.footer__links a:hover {
+  opacity: 1;
+}
+
+.footer__note {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.45;
+}
+
+/* ---- intentional responsive states ------------------------------------- */
+
+/* Tablet: the three-up step row is too cramped below this, and the nav has to
+   shed its section links before the pill starts colliding with the wordmark. */
+@media (max-width: 900px) {
+  .nav__links a:not(.nav__cta):not(.nav__signin) {
+    display: none;
+  }
+
+  .steps {
+    grid-template-columns: 1fr;
+  }
+
+  .step {
+    padding: 26px 0;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .step:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .step__index {
+    margin-bottom: 12px;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Phone: one column throughout, the sign-in link folds into the pill, and the
+   footer stacks so the legal line is never orphaned mid-row. */
+@media (max-width: 620px) {
+  .nav {
+    padding: 18px 0;
+  }
+
+  .nav__signin {
+    display: none;
+  }
+
+  .nav__cta {
+    padding: 8px 15px;
+    font-size: 13.5px;
+  }
+
+  .nav__mark {
+    width: 22px;
+  }
+
+  .cta__actions {
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .button--solid,
+  .button--quiet {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+}

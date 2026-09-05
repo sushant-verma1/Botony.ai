@@ -14,13 +14,15 @@ export const authAPI = {
     email: string,
     password: string,
     firstName: string,
-    lastName: string
+    lastName: string,
+    age: string
   ) =>
     api.post<AuthResponse>("/auth/register", {
       email,
       password,
       firstName,
       lastName,
+      age
     }),
 
   login: (email: string, password: string) =>

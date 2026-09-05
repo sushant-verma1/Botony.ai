@@ -10,7 +10,7 @@ import {
 import logger from "../services/logger.js";
 
 export const registerController = async (req: Request, res: Response) => {
-  const { email, password, firstName, lastName } = req.body;
+  const { email, password, firstName, lastName, age } = req.body;
 
   logger.info("Register request received", { email });
 
@@ -37,6 +37,7 @@ export const registerController = async (req: Request, res: Response) => {
         firstName,
         lastName,
         password: hashedPassword,
+        age,
       },
     });
 

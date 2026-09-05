@@ -1,7 +1,11 @@
 import Express from "express";
 import { prisma } from "../config/db.js";
-import { detectEmergency, getEmergencyResponse } from "../utils/safety.util.js";
-import { getClaudeResponse, Message } from "../services/claude.js";
+import {
+  detectEmergency,
+  getEmergencyResponse,
+  getMedicalDisclaimer,
+} from "../utils/safety.util.js";
+import { getClaudeResponse, ClaudeServiceError, Message } from "../services/claude.js";
 import logger from "../services/logger.js";
 
 export const newChatController = async (
@@ -32,6 +36,96 @@ export const newChatController = async (
     conversationId: conversation.id,
     message: "New chat created successfully",
   });
+};
+
+export const listConversationsController = async (
+  req: Express.Request,
+  res: Express.Response,
+) => {
+  const conversations = await prisma.conversation.findMany({
+    where: { userId: req.user.userId },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return res.json({ conversations });
+};
+
+export const renameConversationController = async (
+  req: Express.Request<{ chatid: string }>,
+  res: Express.Response,
+) => {
+  const conversationId = req.params.chatid;
+  const { title } = req.body;
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { userId: true },
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ message: "Conversation not found" });
+  }
+
+  if (conversation.userId !== req.user.userId) {
+    logger.warn("Unauthorized rename attempt", {
+      userId: req.user.userId,
+      conversationId,
+    });
+    return res.status(403).json({ message: "Not allowed" });
+  }
+
+  const updated = await prisma.conversation.update({
+    where: { id: conversationId },
+    data: { title },
+    select: { id: true, title: true },
+  });
+
+  logger.info("Conversation renamed", {
+    userId: req.user.userId,
+    conversationId,
+  });
+
+  return res.json({ conversationId: updated.id, title: updated.title });
+};
+
+export const deleteConversationController = async (
+  req: Express.Request<{ chatid: string }>,
+  res: Express.Response,
+) => {
+  const conversationId = req.params.chatid;
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { userId: true },
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ message: "Conversation not found" });
+  }
+
+  if (conversation.userId !== req.user.userId) {
+    logger.warn("Unauthorized delete attempt", {
+      userId: req.user.userId,
+      conversationId,
+    });
+    return res.status(403).json({ message: "Not allowed" });
+  }
+
+  await prisma.conversation.delete({ where: { id: conversationId } });
+
+  logger.info("Conversation deleted", {
+    userId: req.user.userId,
+    conversationId,
+  });
+
+  return res.json({ message: "Conversation deleted successfully" });
 };
 
 export const messageController = async (
@@ -137,17 +231,26 @@ export const messageController = async (
       },
     });
 
-    if (conversation.status === "emergency") {
-      await prisma.conversation.update({
-        where: { id: conversationId },
-        data: { status: "ongoing" },
-      });
-    }
-
     const previousMessages = await prisma.message.findMany({
       where: { conversationId },
       orderBy: { createdAt: "desc" },
       take: 3,
+    });
+
+    const conversationUpdate: { status?: string; title?: string } = {};
+
+    if (conversation.status === "emergency") {
+      conversationUpdate.status = "ongoing";
+    }
+
+    if (previousMessages.length === 1) {
+      conversationUpdate.title =
+        content.length > 60 ? `${content.slice(0, 60).trim()}…` : content.trim();
+    }
+
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: conversationUpdate,
     });
 
     const messagesForClaude: Message[] = previousMessages
@@ -178,7 +281,8 @@ export const messageController = async (
       });
     }
 
-    const claudeResponse = await getClaudeResponse(messagesForClaude);
+    const claudeResponse =
+      (await getClaudeResponse(messagesForClaude)) + getMedicalDisclaimer();
 
     const assistantMessage = await prisma.message.create({
       data: {
@@ -197,6 +301,16 @@ export const messageController = async (
       response: claudeResponse,
     });
   } catch (error: any) {
+    if (error instanceof ClaudeServiceError) {
+      logger.error("Claude service unavailable", {
+        originalMessage: error.originalMessage,
+        conversationId,
+        userId: req.user.userId,
+      });
+
+      return res.status(error.status).json({ message: error.userMessage });
+    }
+
     logger.error("Claude error", {
       message: error.message,
       stack: error.stack,
@@ -211,31 +325,31 @@ export const messageController = async (
   }
 };
 
+const HISTORY_PAGE_SIZE = 30;
+const HISTORY_PAGE_SIZE_MAX = 100;
+
 export const getHistoryController = async (
   req: Express.Request<{ chatid: string }>,
   res: Express.Response,
 ) => {
   const conversationId = req.params.chatid;
-
-  const conversation = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: {
-      messages: {
-        orderBy: { createdAt: "asc" },
-        select: {
-          id: true,
-          content: true,
-          role: true,
-          emergencyDetected: true,
-          createdAt: true,
-        },
-      },
-    },
-  });
+  const before = req.query.before as string | undefined;
+  const rawLimit = Number(req.query.limit);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, HISTORY_PAGE_SIZE_MAX)
+      : HISTORY_PAGE_SIZE;
 
   logger.info("Fetching chat history", {
     userId: req.user.userId,
     conversationId,
+    before,
+    limit,
+  });
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { userId: true },
   });
 
   if (!conversation) {
@@ -247,8 +361,38 @@ export const getHistoryController = async (
     return res.status(403).json({ message: "Not allowed" });
   }
 
+  if (before) {
+    const cursorMessage = await prisma.message.findFirst({
+      where: { id: before, conversationId },
+      select: { id: true },
+    });
+
+    if (!cursorMessage) {
+      return res.status(400).json({ message: "Invalid pagination cursor" });
+    }
+  }
+
+  const messages = await prisma.message.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: "desc" },
+    take: limit + 1,
+    ...(before ? { cursor: { id: before }, skip: 1 } : {}),
+    select: {
+      id: true,
+      content: true,
+      role: true,
+      emergencyDetected: true,
+      createdAt: true,
+    },
+  });
+
+  const hasMore = messages.length > limit;
+  const page = messages.slice(0, limit).reverse();
+
   return res.json({
     conversationId,
-    messages: conversation.messages,
+    messages: page,
+    hasMore,
+    nextCursor: hasMore ? page[0].id : null,
   });
 };

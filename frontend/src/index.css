@@ -1,0 +1,82 @@
+/* ------------------------------------------------------------------------
+   Global ground floor. Three colours, three typefaces, and the smallest
+   reset that makes them behave. Everything else is component-scoped.
+   --------------------------------------------------------------------- */
+
+:root {
+  --ink: #03120e;
+  --line: #e6e6ea;
+  --surface: #f4f4f8;
+  --paper: #ffffff;
+
+  --serif: Newsreader, ui-serif, Georgia, "Times New Roman", serif;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* One rhythm for every vertical gap on the page. */
+  --gutter: clamp(20px, 5vw, 64px);
+  --section: clamp(72px, 11vh, 148px);
+
+  color-scheme: light;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* The hero animation moves an object in from off-screen; without this the
+   page can be dragged sideways on touch devices while it flies. */
+body {
+  overflow-x: hidden;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

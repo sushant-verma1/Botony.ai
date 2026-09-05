@@ -1,0 +1,294 @@
+/* ------------------------------------------------------------------------
+   Hero sequence — layout and resting state only.
+
+   Every value that animates is owned by Anime.js (useIntroTimeline.ts) and
+   defined in introConfig.ts. The rules here compose the scene correctly if
+   scripting never runs, and size the one thing JS deliberately does not own:
+   the finished character. The timeline measures that width back off the DOM,
+   so there is exactly one definition of it and it lives here.
+
+   Palette: #03120E ink · #E6E6EA line · #F4F4F8 surface · #FFFFFF paper
+   --------------------------------------------------------------------- */
+
+.hero__scene {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 100svh;
+  padding: 0 16px;
+  overflow: hidden;
+  color: #03120e;
+}
+
+/* Headline, stage and outro all share the one centre cell, then offset
+   themselves from it. That way the stage stays optically centred in the
+   viewport no matter how much copy sits above or below it — the box lands
+   on the vertical centre the reference puts it on. */
+.hero__headline,
+.hero__stage,
+.hero__outro {
+  grid-area: 1 / 1;
+}
+
+/* ---- headline, held above the box ------------------------------------ */
+
+.hero__headline {
+  z-index: 2;
+  opacity: 0; /* the timeline owns this; 0 stops a flash before it starts */
+  margin: 0;
+  /* Clears the 172px-tall textbox below it. This is the `translate` property,
+     not `transform`: the timeline animates `y` on this element, and anime
+     writes that as an inline `transform`, which would overwrite the offset.
+     The two compose instead. */
+  translate: 0 -136px;
+  font-family: Newsreader, ui-serif, Georgia, serif;
+  font-size: clamp(30px, 4.4vw, 52px);
+  font-weight: 400;
+  letter-spacing: -0.022em;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none; /* never steals a click from the textarea */
+  user-select: none;
+}
+
+/* ---- the shared centre cell ------------------------------------------ */
+
+.hero__stage {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+}
+
+/* Both occupants of the stage sit in one cell, so the morph box and the
+   character are co-centred automatically and the handoff between them needs
+   no positioning maths at all. */
+.hero__eyes,
+.hero__morph {
+  grid-area: 1 / 1;
+}
+
+/* The only place the finished character's size is decided. Changing this
+   changes the circle the box collapses into, because the timeline derives
+   that diameter by measuring this element. */
+.hero__eyes {
+  width: clamp(150px, 15vw, 248px);
+  height: auto;
+  color: #03120e;
+  opacity: 0; /* the timeline owns this */
+  overflow: visible;
+}
+
+/* ---- the morphing surface: squircle -> textbox -> pill -> circle ------ */
+
+.hero__morph {
+  position: relative;
+  box-sizing: border-box;
+
+  /* Resting state, mirrored from introConfig's shapeSize/shapeRadius at a
+     mid-size viewport. The timeline overwrites all of it on the first frame;
+     these values only matter with JS disabled. */
+  width: 108px;
+  height: 108px;
+  border-radius: 22px;
+  background: #03120e;
+  border: 1px solid rgba(230, 230, 234, 0);
+
+  /* One shadow, constant for the whole sequence. Keeping it unchanged is part
+     of what sells the morph as a single physical object. */
+  box-shadow: 0 24px 60px -28px rgba(3, 18, 14, 0.28);
+
+  overflow: hidden;
+  will-change: transform, width, height;
+}
+
+.hero__content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  opacity: 0; /* revealed once the container has finished expanding */
+}
+
+.hero__input {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 26px 28px 4px;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: #03120e;
+  caret-color: #03120e;
+  font-family: inherit;
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+.hero__input::placeholder {
+  color: #03120e;
+  opacity: 0.42;
+}
+
+.hero__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px 14px 28px;
+}
+
+.hero__hint {
+  font-size: 12.5px;
+  letter-spacing: 0.005em;
+  color: #03120e;
+  opacity: 0.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hero__send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: #03120e;
+  color: #f4f4f8;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.hero__send:hover {
+  opacity: 0.82;
+}
+
+.hero__send:active {
+  transform: scale(0.94);
+}
+
+.hero__send:focus-visible {
+  outline: 2px solid #03120e;
+  outline-offset: 3px;
+}
+
+/* ---- what the product is, once the character has settled -------------- */
+
+.hero__outro {
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  width: min(520px, 100%);
+  /* Below the character, which is at most 248 * 38/143 ≈ 66px tall. Same
+     `translate`-not-`transform` reason as .hero__headline above. */
+  translate: 0 132px;
+  opacity: 0; /* the timeline owns this */
+  text-align: center;
+}
+
+.hero__eyebrow {
+  margin: 0;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #03120e;
+  opacity: 0.5;
+}
+
+.hero__lede {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 16.5px;
+  line-height: 1.62;
+  color: #03120e;
+  opacity: 0.74;
+  text-wrap: pretty;
+}
+
+.hero__replay {
+  padding: 6px 2px;
+  border: 0;
+  border-bottom: 1px solid #e6e6ea;
+  background: none;
+  color: #03120e;
+  opacity: 0.55;
+  font: inherit;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: opacity 160ms ease, border-color 160ms ease;
+}
+
+.hero__replay:hover {
+  opacity: 1;
+  border-bottom-color: #03120e;
+}
+
+/* ---- intentional responsive states ------------------------------------ */
+
+/* Tablet: the box is narrower relative to the viewport than on desktop, so
+   the headline needs to sit closer to it or the composition pulls apart. */
+@media (max-width: 900px) {
+  .hero__headline {
+    translate: 0 -124px;
+  }
+  .hero__outro {
+    translate: 0 118px;
+  }
+}
+
+/* Phone: the box is shorter (see boxHeight), the type steps down a size, and
+   the padding tightens so a two-line placeholder still fits. The character
+   keeps its proportions — only its scale changes — so the eye relationship
+   the SVG defines survives intact. */
+@media (max-width: 560px) {
+  .hero__scene {
+    padding: 0 12px;
+  }
+  .hero__headline {
+    translate: 0 -112px;
+    font-size: clamp(27px, 8vw, 34px);
+  }
+  .hero__input {
+    padding: 20px 20px 4px;
+    font-size: 16px; /* below 16 iOS zooms the page on focus */
+  }
+  .hero__toolbar {
+    padding: 6px 10px 12px 20px;
+    gap: 8px;
+  }
+  .hero__hint {
+    font-size: 11.5px;
+  }
+  .hero__eyes {
+    width: clamp(132px, 38vw, 168px);
+  }
+  .hero__outro {
+    translate: 0 104px;
+    gap: 14px;
+  }
+  .hero__lede {
+    font-size: 15.5px;
+  }
+}
+
+/* Short viewports (landscape phones): the offsets above would push the outro
+   off-screen, so the whole composition compresses toward the centre. */
+@media (max-height: 620px) {
+  .hero__headline {
+    translate: 0 -104px;
+    font-size: clamp(24px, 4vw, 32px);
+  }
+  .hero__outro {
+    translate: 0 96px;
+  }
+  .hero__lede {
+    display: none;
+  }
+}

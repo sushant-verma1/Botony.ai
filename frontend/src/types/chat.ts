@@ -21,4 +21,18 @@ export interface ChatMessage {
 export interface HistoryResponse {
   conversationId: string
   messages: ChatMessage[]
+  hasMore: boolean
+  nextCursor: string | null
+}
+
+export interface ConversationSummary {
+  id: string
+  title: string | null
+  status: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ConversationsResponse {
+  conversations: ConversationSummary[]
 }

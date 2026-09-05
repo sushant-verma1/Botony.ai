@@ -7,9 +7,11 @@ export const createUserSchema = Joi.object({
 
   firstName: Joi.string().min(3).max(20).required(),
 
-  lastName: Joi.string().min(2).max(50).optional(),
+  lastName: Joi.string().min(2).max(50).required(),
 
   plan: Joi.string().valid("ADVISOR", "PERSONAL", "FRIEND").default("ADVISOR"),
+
+  age: Joi.number().integer().min(13).max(120).required(),
 });
 
 export const loginSchema = Joi.object({
@@ -21,10 +23,12 @@ export const createConversationSchema = Joi.object({
   title: Joi.string().max(100).optional(),
 
   status: Joi.string().valid("ONGOING", "COMPLETED").default("ONGOING"),
-
-  userId: Joi.string().required(),
 });
 
 export const createMessageSchema = Joi.object({
-  content: Joi.string().min(1).required(),
+  content: Joi.string().min(1).max(3000).required(),
+});
+
+export const renameConversationSchema = Joi.object({
+  title: Joi.string().trim().min(1).max(100).required(),
 });

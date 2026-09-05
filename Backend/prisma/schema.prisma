@@ -23,6 +23,7 @@ model User {
   password  String
   firstName String?
   lastName  String?
+  age       Int
 
   plan Plan @default(ADVISOR)
 
