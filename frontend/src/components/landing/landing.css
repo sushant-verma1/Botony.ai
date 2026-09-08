@@ -12,6 +12,30 @@
   --measure: 1160px;
 }
 
+/* ---- hero backdrop ------------------------------------------------------ */
+
+/* The contour field (TopographyBackdrop). Out of flow, so it moves nothing;
+   the height matches the hero's own min-height, so it ends where the written
+   page begins and never sits behind body copy.
+
+   It is written before the hero in the markup and carries no z-index of its
+   own, which is the whole of its layering: the hero's headline (2), stage (1)
+   and dialogue (0) are all painted after it. `overflow: hidden` keeps the
+   canvas off the page's horizontal scroll. */
+.landing__backdrop {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 100svh;
+  overflow: hidden;
+  pointer-events: none; /* scenery: every click belongs to the hero */
+
+  /* The field has to stop somewhere, and a contour map cut off by a straight
+     horizontal line reads as a seam. It fades out into the paper instead,
+     over the last of the hero — where the character already covers it. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 68%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 68%, transparent 100%);
+}
+
 /* Every block shares one column so the left edge is unbroken from the nav to
    the footer. Optical alignment beats decoration on a page this quiet. */
 .nav,

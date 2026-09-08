@@ -3,16 +3,48 @@
    reset that makes them behave. Everything else is component-scoped.
    --------------------------------------------------------------------- */
 
+/* Tailwind's utilities, for the one thing on the site that needs them: the
+   React Bits Topography in src/components/Topography is the registry's
+   Tailwind build, and its classes are the component.
+
+   Preflight is deliberately left out — `tailwindcss` in full would bring a
+   global reset over a page whose CSS is written by hand, which is a redesign
+   nobody asked for. Utilities land in their own layer, so every unlayered
+   rule below and in each component's stylesheet still wins. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Self-hosted rather than pulled from Google Fonts, per the files in
+   frontend/refrences: only the two weights the site actually sets. */
+@font-face {
+  font-family: "Fira Sans";
+  src: url("/fonts/fira-sans/FiraSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Fira Sans";
+  src: url("/fonts/fira-sans/FiraSans-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --ink: #03120e;
   --line: #e6e6ea;
   --surface: #f4f4f8;
   --paper: #ffffff;
 
-  --serif: Newsreader, ui-serif, Georgia, "Times New Roman", serif;
-  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+  --sans: "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     Roboto, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Serif and mono are kept as names so component CSS can still say what role
+     a piece of type plays, but both now resolve to the one site-wide face. */
+  --serif: var(--sans);
+  --mono: var(--sans);
 
   /* One rhythm for every vertical gap on the page. */
   --gutter: clamp(20px, 5vw, 64px);

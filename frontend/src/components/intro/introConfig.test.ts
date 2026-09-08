@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 // Read the actual asset rather than a copy of its numbers, so this file fails
 // if the artwork is ever replaced with different geometry.
 import referenceSvg from "../../assets/svgviewer-output (1).svg?raw";
+import replacementBody from "../../assets/canvas_continuous_body.svg?raw";
 import {
+  BODY_OFFSET,
   EYE,
+  IDLE,
   T,
+  ZOOM,
   boxHeight,
   boxWidth,
   circleFromEyeWidth,
+  lookDuration,
   shapeRadius,
   shapeSize,
 } from "./introConfig";
@@ -25,6 +30,25 @@ const rect = /<rect[\s\S]*?\/>/.exec(referenceSvg)?.[0] ?? "";
 // character, rather than letting every assertion below read `undefined`.
 if (found.length !== 2) throw new Error(`expected 2 eyes, found ${found.length}`);
 const [leftEye, rightEye] = found as [string, string];
+
+describe("replacement body asset", () => {
+  it("contains an integrated body fill, not its face or a canvas background", () => {
+    // These are the supplied SVG's two eye-layer transforms and mouth path.
+    // Keeping this assertion against the generated body-only asset prevents a
+    // later asset refresh from quietly putting the new face back behind the
+    // legacy animated eye system.
+    expect(replacementBody).not.toContain(
+      "translate(35.548798631738784 -230.83073346703137)",
+    );
+    expect(replacementBody).not.toContain(
+      "translate(61.792619905354115 -230.83073346703137)",
+    );
+    expect(replacementBody).not.toContain("M43.032108877823696 -227.35850535793065");
+    expect(replacementBody).not.toMatch(/<rect\b/);
+    expect(replacementBody).toContain('data-character-fill="true"');
+    expect(replacementBody).toContain('fill="#FFFFFF"');
+  });
+});
 
 // The config expresses the artwork at the origin; the file draws it inside a
 // 600x800 canvas. One translation relates the two.
@@ -155,6 +179,77 @@ describe("responsive sizing", () => {
   it("gives phones the shorter box", () => {
     expect(boxHeight(390)).toBe(148);
     expect(boxHeight(834)).toBe(172);
+  });
+});
+
+describe("the idle character", () => {
+  it("maps the reference's body coordinates onto the eyes", () => {
+    // The body is drawn in the file's own coordinates inside a group offset by
+    // BODY_OFFSET. Applying it to the file's own eye must land on the eye the
+    // config draws, or the character is registered to nothing.
+    expect(num("cx", leftEye) + BODY_OFFSET.x).toBe(EYE.CX_L);
+    expect(num("cy", leftEye) + BODY_OFFSET.y).toBe(EYE.CY);
+    expect(num("cx", rightEye) + BODY_OFFSET.x).toBe(EYE.CX_R);
+  });
+
+  it("glances for about the five seconds the brief asks for", () => {
+    expect(lookDuration).toBeGreaterThan(4500);
+    expect(lookDuration).toBeLessThan(5500);
+    // Four darts and three dwells: centre, left, centre, right, centre.
+    expect(lookDuration).toBe(IDLE.lookStep * 4 + IDLE.lookDwell * 3);
+  });
+
+  it("keeps both eyes inside the head at full deflection", () => {
+    // The eyes and the bar move as one group, so the connector can never come
+    // away from them however far they travel. What actually bounds the glance
+    // is the head: read its ellipse out of the asset, take its half-width on
+    // the eye centreline, and require both eyes to stay inside it.
+    const head = /<ellipse[\s\S]*?\/>/.exec(referenceSvg)?.[0] ?? "";
+    const cx = num("cx", head) + BODY_OFFSET.x;
+    const cy = num("cy", head) + BODY_OFFSET.y;
+    const halfW =
+      num("rx", head) * Math.sqrt(1 - ((EYE.CY - cy) / num("ry", head)) ** 2);
+
+    expect(IDLE.lookShift).toBeGreaterThan(0);
+    // Looking left, the left eye's outer edge is the leading one; looking
+    // right, the right eye's is.
+    expect(EYE.CX_L - EYE.R - IDLE.lookShift).toBeGreaterThan(cx - halfW);
+    expect(EYE.CX_R + EYE.R + IDLE.lookShift).toBeLessThan(cx + halfW);
+  });
+
+  it("closes the eye without collapsing or widening it", () => {
+    // Zero renders nothing at all, which reads as the eyes vanishing.
+    expect(IDLE.blinkScale).toBeGreaterThan(0);
+    expect(IDLE.blinkScale).toBeLessThan(0.2);
+    // A blink is a shut-and-open, not a pulse: closing is the faster half.
+    expect(IDLE.blinkClose).toBeLessThan(IDLE.blinkOpen);
+    // Blinking often enough to read as alive, rarely enough not to nag.
+    expect(IDLE.blinkHold).toBeGreaterThan(2000);
+  });
+});
+
+describe("the post-dialogue withdrawal", () => {
+  // The rise is computed against the scene at runtime; what can be asserted
+  // here is that the constants describe a character that gets smaller and ends
+  // up higher, which is the whole of the move.
+  it("shrinks the character rather than growing it", () => {
+    expect(ZOOM.scale).toBeGreaterThan(0);
+    expect(ZOOM.scale).toBeLessThan(1);
+  });
+
+  it("comes to rest above the middle of the scene", () => {
+    expect(ZOOM.eyeLine).toBeGreaterThan(0);
+    expect(ZOOM.eyeLine).toBeLessThan(0.5);
+  });
+
+  it("takes the caption with it, and no slower than the move", () => {
+    expect(ZOOM.captionOut).toBeGreaterThan(0);
+    expect(ZOOM.captionOut).toBeLessThanOrEqual(ZOOM.duration);
+  });
+
+  it("moves for long enough to read as a camera, not a resize", () => {
+    expect(ZOOM.duration).toBeGreaterThanOrEqual(1000);
+    expect(ZOOM.duration).toBeLessThanOrEqual(1500);
   });
 });
 

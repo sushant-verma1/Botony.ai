@@ -48,8 +48,53 @@ export const T = {
   /** EYE_FORMATION. */
   split: 820,
   splitBounce: 0.2,
-  outroIn: 700,
 } as const;
+
+/** IDLE — everything after the character has formed.
+ *
+ *  Three animations share one start beat and are then independent: the body
+ *  fades in, the eyes glance left and right once, and the blink loops for as
+ *  long as the page is open. Each is retimed on its own here; none of them
+ *  touches a property any earlier state animates. */
+export const IDLE = {
+  /** Body fade-in, on the same beat as the first glance. */
+  fade: 900,
+  /** One glance: `step` to dart, `dwell` to hold the look before moving on.
+   *  CENTRE-L-CENTRE-R-CENTRE is four darts and three dwells. */
+  lookStep: 520,
+  lookDwell: 980,
+  /** Horizontal travel, in the SVG's own units — 7% of the character's width,
+   *  either side of centre. The eyes and the connector translate as one group,
+   *  so the bar cannot come away from the eyes whatever this is; what actually
+   *  bounds it is the head, and introConfig.test.ts holds the eyes inside it
+   *  at full deflection using the head ellipse from the asset itself. */
+  lookShift: 10,
+  /** Extra travel for the *opposite* eye — the one on the far side of the
+   *  glance's direction moves a little further than the near eye, which is
+   *  what keeps the look from feeling like a single rigid slab. */
+  lookShiftOpposite: 12,
+  /** Once the glance finishes, the character settles this far down before the
+   *  recorded line starts — a small easeInOut drop that reads as "about to
+   *  speak", not a bounce. */
+  settleShift: 20,
+  settleDuration: 420,
+  /** The blink. Closing faster than opening is what makes it read as a lid
+   *  dropping rather than the eyes pulsing. */
+  blinkClose: 90,
+  blinkOpen: 130,
+  /** Eyes-open time between blinks; a resting human rate is ~3-4s. Regular,
+   *  not randomised — irregular blinking reads as a broken animation. */
+  blinkHold: 3400,
+  /** How flat the eye gets, as a fraction of its height. Not 0: an ellipse of
+   *  zero height renders nothing at all, which reads as the eyes vanishing
+   *  rather than closing. The width is untouched by construction — only
+   *  scaleY is animated. */
+  blinkScale: 0.07,
+} as const;
+
+/** The glance, end to end. Derived rather than written down so retiming a
+ *  beat cannot leave a stale total behind. ~5s, per the brief. */
+export const lookDuration = IDLE.lookStep * 4 + IDLE.lookDwell * 3;
 
 /** Peak tilt in degrees during the entrance.
  *
@@ -89,6 +134,25 @@ export const EYE = {
   BAR_H: 6,
 } as const;
 
+/** Where the reference file draws the left eye, before the translation above.
+ *  The only place the asset's untranslated coordinates appear. */
+const REF_EYE_L = { cx: 250, cy: 171 } as const;
+
+/** What to translate the *rest* of the character by so it registers with the
+ *  eyes.
+ *
+ *  The head, torso, arms and legs are used verbatim from the reference, which
+ *  draws them in its own 600x800 canvas. Drawing them inside a group offset by
+ *  this puts them in the eyes' coordinate system, so the whole character is
+ *  one set of geometry in one viewBox: it scales with the eyes, cannot drift
+ *  from them at any viewport, and needed no change to the eyes to accommodate
+ *  it. The SVG's viewBox still frames the eye pair alone — the body simply
+ *  overflows it (see .hero__eyes { overflow: visible }). */
+export const BODY_OFFSET = {
+  x: EYE.CX_L - REF_EYE_L.cx,
+  y: EYE.CY - REF_EYE_L.cy,
+} as const;
+
 const clamp = (min: number, v: number, max: number) =>
   Math.max(min, Math.min(v, max));
 
@@ -115,3 +179,58 @@ export const boxHeight = (w: number) => (w < 560 ? 148 : 172);
  *  match. intro.css owns the character's size; this follows it. */
 export const circleFromEyeWidth = (renderedEyeW: number) =>
   (renderedEyeW * EYE.R * 2) / EYE.VIEW_W;
+
+/** POST_DIALOGUE — the character withdraws the moment the recording finishes.
+ *
+ *  It rises and shrinks in one move, and the caption goes with it. A framing
+ *  change and nothing else: one uniform scale on the whole SVG, so the artwork
+ *  cannot stretch, no coordinate and no viewBox is touched, and the blink and
+ *  the expressions carry on underneath because neither of them writes
+ *  `scale`. */
+export const ZOOM = {
+  /** What the character is left at, as a fraction of the size it played the
+   *  line at. Uniform: this is the only scale, on both axes. */
+  scale: 0.9,
+  /** Where it comes to rest, as a fraction of the scene's height measured to
+   *  the eye centreline. Below 0.5 is above the middle, so the character rises
+   *  as it shrinks; anchoring it to the scene rather than shifting it by a
+   *  fixed distance puts it in the same place at every viewport. */
+  eyeLine: 0.3,
+  /** Long enough to read as a camera move rather than a resize. */
+  duration: 1200,
+  /** The caption leaves on the same beat, a little quicker than the move, so
+   *  the words are gone before the character has finished settling. */
+  captionOut: 620,
+} as const;
+
+/** CHEST — where the expression control sits on the character.
+ *
+ *  Written in the reference artwork's own coordinates, the same space the
+ *  torso path is drawn in, and rendered inside a group carrying BODY_OFFSET
+ *  exactly like the body is. That registers the control to the chest by
+ *  construction: it rides the character's scale and the post-dialogue
+ *  withdrawal with no measurement, no resize handler and nothing that can
+ *  drift, and it cannot be centred on anything other than the torso's
+ *  centreline because that centreline is the number below.
+ *
+ *  The vertical budget is what the framing leaves: ZOOM puts the eyes (y 171
+ *  here) three tenths down the scene, so on a short desktop viewport the
+ *  visible artwork runs out around y 480. Everything here fits above that. */
+export const CHEST = {
+  /** The torso's centreline. The face and the slider are both centred on it. */
+  cx: 300,
+  /** The top of the face — clear of the head, which ends at y 261. */
+  top: 300,
+  /** What the face's 24-unit square is drawn to. */
+  face: 100,
+  /** Between the face and the slider. */
+  gap: 18,
+  /** The slider. The torso is ~364 wide across the chest, so this leaves a
+   *  comfortable margin either side at every viewport. */
+  sliderW: 230,
+  sliderH: 34,
+  /** Where the control rests before it is touched, on the same 0-100 scale
+   *  the slider uses: the middle of the range, which is neutral — the thumb
+   *  starts centred, with as much expression to give either way. */
+  initial: 50,
+} as const;

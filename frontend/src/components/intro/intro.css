@@ -20,13 +20,13 @@
   color: #03120e;
 }
 
-/* Headline, stage and outro all share the one centre cell, then offset
+/* Headline, caption and stage all share the one centre cell, then offset
    themselves from it. That way the stage stays optically centred in the
-   viewport no matter how much copy sits above or below it — the box lands
-   on the vertical centre the reference puts it on. */
+   viewport no matter how much copy sits above it — the box lands on the
+   vertical centre the reference puts it on. */
 .hero__headline,
-.hero__stage,
-.hero__outro {
+.hero__dialogue,
+.hero__stage {
   grid-area: 1 / 1;
 }
 
@@ -41,7 +41,7 @@
      writes that as an inline `transform`, which would overwrite the offset.
      The two compose instead. */
   translate: 0 -136px;
-  font-family: Newsreader, ui-serif, Georgia, serif;
+  font-family: var(--sans);
   font-size: clamp(30px, 4.4vw, 52px);
   font-weight: 400;
   letter-spacing: -0.022em;
@@ -75,7 +75,127 @@
   height: auto;
   color: #03120e;
   opacity: 0; /* the timeline owns this */
+  /* The viewBox frames the eye pair; the rest of the character is drawn in the
+     same coordinate system and overflows it. */
   overflow: visible;
+}
+
+/* The blink scales each eye on Y only, so it has to compress about its own
+   centre rather than the SVG's origin. Without these two lines the eye slides
+   up the canvas instead of closing. The width is never animated, so the eye
+   keeps its drawn shape throughout.
+
+   Scoped to a class, not to `ellipse`: the character's head is an ellipse too.
+   Because fill-box tracks the element's own bounding box, an eye that the
+   dialogue has reshaped still blinks about its own new centre — the expression
+   sets the geometry and the blink compresses whatever geometry it finds. */
+.hero__eye {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Head, torso, arms and legs, in the reference's own flat white. That is the
+   same paper-on-surface pairing the textbox uses against this page, so the
+   character reads as the same material the box was made of, and no colour is
+   introduced that the sequence did not already use. No outline: at the size
+   the reference proportions give this, a stroke draws a hard edge across the
+   copy behind it. */
+.hero__body {
+  fill: #ffffff;
+  opacity: 0; /* the timeline owns this */
+}
+
+/* ---- the chest expression control ------------------------------------- */
+
+/* Everything about where this sits is decided in the character's own
+   coordinates (see CHEST in introConfig), so there is no positioning here.
+   The group only needs its one-time arrival: it is mounted after the character
+   has settled, and appearing on a hard cut after a 1.2s camera move reads as a
+   glitch. This is the entrance and nothing else — no expression, at any point
+   on the slider, is ever faded, crossfaded or transitioned. */
+.hero__mood {
+  animation: hero-mood-in 420ms ease both;
+}
+
+@keyframes hero-mood-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The slider is laid out by a foreignObject in the character's coordinates, so
+   these pixels are the character's pixels: the control scales with the body it
+   is drawn on instead of staying a fixed size in front of it.
+
+   Native range input, styled down to a line and a dot — the two parts the
+   composition needs. The ink and the surface tint are the page's own; nothing
+   is added that the sequence has not already used. */
+.hero__moodRange {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* The input still lays out its own track and thumb — that is what puts the
+   thumb under the pointer, what the focus ring is drawn around, and what the
+   arrow keys move — but the drawing of both is the SVG layer underneath it
+   (ExpressionSlider). What is left here is the geometry, unpainted. */
+.hero__moodRange::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.hero__moodRange::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+/* margin-top centres the thumb on the 3px track: half the thumb, less half
+   the track. */
+.hero__moodRange::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.hero__moodRange::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+}
+
+/* Keyboard focus lands on the thumb, which is the part that moves. The ring
+   is drawn around the input's own thumb rather than the sprung one, so it
+   marks the value the control actually holds while the drawing catches up. */
+.hero__moodRange:focus-visible {
+  outline: none;
+}
+
+.hero__moodRange:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid #03120e;
+  outline-offset: 2px;
+}
+
+.hero__moodRange:focus-visible::-moz-range-thumb {
+  outline: 2px solid #03120e;
+  outline-offset: 2px;
 }
 
 /* ---- the morphing surface: squircle -> textbox -> pill -> circle ------ */
@@ -176,58 +296,67 @@
   outline-offset: 3px;
 }
 
-/* ---- what the product is, once the character has settled -------------- */
-
-.hero__outro {
-  z-index: 2;
-  display: grid;
-  justify-items: center;
-  gap: 18px;
-  width: min(520px, 100%);
-  /* Below the character, which is at most 248 * 38/143 ≈ 66px tall. Same
-     `translate`-not-`transform` reason as .hero__headline above. */
-  translate: 0 132px;
-  opacity: 0; /* the timeline owns this */
+/* The spoken line. Laid out like .hero__headline — centred in the same
+   shared cell, directly over the character — but with a lower z-index than
+   .hero__stage, so the character sits in front of its own words instead of
+   the line appearing beside or under it. */
+.hero__dialogue {
+  z-index: 0;
+  margin: 0;
+  max-width: 42ch;
+  /* Same `translate`-not-`transform` reason as .hero__headline: nothing here
+     animates it, but staying off `transform` keeps the door open. Shifted up
+     off the shared cell's centre so it reads from behind the character's
+     upper half rather than dead centre. */
+  translate: 0 -190px;
+  font-family: var(--sans);
+  font-size: 20px;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  color: #e4e6e6;
   text-align: center;
-}
-
-.hero__eyebrow {
-  margin: 0;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: #03120e;
-  opacity: 0.5;
-}
-
-.hero__lede {
-  margin: 0;
-  max-width: 46ch;
-  font-size: 16.5px;
-  line-height: 1.62;
-  color: #03120e;
-  opacity: 0.74;
   text-wrap: pretty;
+  pointer-events: none;
+  user-select: none;
 }
 
-.hero__replay {
-  padding: 6px 2px;
-  border: 0;
-  border-bottom: 1px solid #e6e6ea;
-  background: none;
+/* Words are revealed by fading in, one at a time, in place. No cursor, no
+   letter animation, nothing that moves — the voice is the performance and the
+   text only has to keep up with it.
+
+   Colour carries the emphasis instead: the word being said right now (.is-active)
+   is full ink, and eases down to a quieter shade (.is-said) the moment the next
+   word takes over, so the read of the line always points at the current word. */
+.hero__dialogue span {
+  opacity: 0;
   color: #03120e;
-  opacity: 0.55;
-  font: inherit;
-  font-size: 12.5px;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: opacity 160ms ease, border-color 160ms ease;
+  transition: opacity 240ms ease, color 240ms ease-in-out;
 }
 
-.hero__replay:hover {
+.hero__dialogue span.is-active {
   opacity: 1;
-  border-bottom-color: #03120e;
+  color: #03120e;
+}
+
+.hero__dialogue span.is-said {
+  opacity: 1;
+  color: rgba(3, 18, 14, 0.55);
+}
+
+/* The character's name: exempt from the said/active colour swap above (same
+   specificity, declared after, so it wins), set in capitals and a size up
+   from the rest of the line so it reads as a name rather than a beat. */
+.hero__dialogue span.is-brand {
+  color: #03120e;
+  transition: opacity 240ms ease;
+  text-transform: uppercase;
+  font-size: 1.15em;
+}
+
+/* The space between words has to survive JSX collapsing whitespace between
+   sibling elements, so it is drawn here rather than left in the markup. */
+.hero__dialogue span + span::before {
+  content: " ";
 }
 
 /* ---- intentional responsive states ------------------------------------ */
@@ -238,8 +367,8 @@
   .hero__headline {
     translate: 0 -124px;
   }
-  .hero__outro {
-    translate: 0 118px;
+  .hero__dialogue {
+    translate: 0 -60px;
   }
 }
 
@@ -255,6 +384,9 @@
     translate: 0 -112px;
     font-size: clamp(27px, 8vw, 34px);
   }
+  .hero__dialogue {
+    translate: 0 -52px;
+  }
   .hero__input {
     padding: 20px 20px 4px;
     font-size: 16px; /* below 16 iOS zooms the page on focus */
@@ -269,26 +401,16 @@
   .hero__eyes {
     width: clamp(132px, 38vw, 168px);
   }
-  .hero__outro {
-    translate: 0 104px;
-    gap: 14px;
-  }
-  .hero__lede {
-    font-size: 15.5px;
-  }
 }
 
-/* Short viewports (landscape phones): the offsets above would push the outro
+/* Short viewports (landscape phones): the offsets above would push the copy
    off-screen, so the whole composition compresses toward the centre. */
 @media (max-height: 620px) {
   .hero__headline {
     translate: 0 -104px;
     font-size: clamp(24px, 4vw, 32px);
   }
-  .hero__outro {
-    translate: 0 96px;
-  }
-  .hero__lede {
-    display: none;
+  .hero__dialogue {
+    translate: 0 -44px;
   }
 }

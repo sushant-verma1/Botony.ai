@@ -1,7 +1,31 @@
 import { useRef } from "react";
-import { EYE } from "./introConfig";
+import newBody from "../../assets/canvas_continuous_body.svg";
+import ExpressionSlider from "./ExpressionSlider";
+import { SCRIPT } from "./dialogue";
+import { BODY_OFFSET, EYE } from "./introConfig";
+import { useDialogue } from "./useDialogue";
+import { useFaceTracking } from "./useFaceTracking";
 import { useIntroTimeline } from "./useIntroTimeline";
 import "./intro.css";
+
+/**
+ * The new artwork's head is 66.52 units wide and its removed face was centred
+ * at (136.99, 35.68). Uniformly scaling that head to the previous 222-unit
+ * head, then registering its former face centre to the existing eye centre,
+ * leaves the eye coordinate system entirely untouched.
+ *
+ * `canvas_continuous_body.svg` is a body-only derivative of the supplied SVG:
+ * its white canvas plus its two eyes and mouth have been deliberately removed.
+ */
+const NEW_BODY = {
+  faceCx: 136.9926816,
+  faceCy: 35.6759256,
+  scale: 3.33794,
+} as const;
+
+const newBodyTransform = `translate(${EYE.CX_MID - NEW_BODY.faceCx * NEW_BODY.scale} ${
+  EYE.CY - NEW_BODY.faceCy * NEW_BODY.scale
+}) scale(${NEW_BODY.scale})`;
 
 /**
  * The hero. Markup and copy only — it holds no timings and no geometry of its
@@ -15,30 +39,58 @@ import "./intro.css";
 export default function IntroSequence() {
   const hero = useRef<HTMLDivElement>(null);
   const svg = useRef<SVGSVGElement>(null);
+  const body = useRef<SVGGElement>(null);
+  const eyes = useRef<SVGGElement>(null);
   const bar = useRef<SVGRectElement>(null);
-  const eyeL = useRef<SVGCircleElement>(null);
-  const eyeR = useRef<SVGCircleElement>(null);
+  const caption = useRef<HTMLParagraphElement>(null);
+  const eyeL = useRef<SVGEllipseElement>(null);
+  const eyeR = useRef<SVGEllipseElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const headline = useRef<HTMLParagraphElement>(null);
-  const outro = useRef<HTMLDivElement>(null);
 
-  const replay = useIntroTimeline({
-    hero,
-    svg,
-    bar,
-    eyeL,
-    eyeR,
-    box,
-    content,
-    headline,
-    outro,
-  });
+  // Declared before the timeline so its (stable, useCallback'd) toggle can be
+  // handed in as the glance's settle callback — the line starts itself once
+  // the character has dropped into place, no click required.
+  const dialogue = useDialogue({ eyeL, eyeR, bar, hero, svg, caption });
+
+  useIntroTimeline(
+    { hero, svg, body, eyes, bar, eyeL, eyeR, box, content, headline },
+    dialogue.toggle,
+  );
+  // The pointer-driven look is deliberately unavailable during the scripted
+  // performance. It starts only with the chest expression slider, after the
+  // post-dialogue withdrawal is complete.
+  useFaceTracking({ svg, eyes, eyeL, eyeR }, dialogue.settled);
 
   return (
     <div ref={hero} className="hero__scene">
       <p ref={headline} className="hero__headline">
         Tell it where it hurts.
+      </p>
+
+      {/* What Baymax is saying, laid out like the headline above — the same
+          shared grid cell, centred over the character — but stacked behind
+          .hero__stage so the character sits in front of its own words rather
+          than the words appearing beside or under it. */}
+      <p ref={caption} className="hero__dialogue">
+        {SCRIPT.map((word, i) => {
+          const spoken =
+            i === dialogue.words - 1
+              ? "is-active"
+              : i < dialogue.words - 1
+                ? "is-said"
+                : "";
+          // The character's own name is a brand mark, not a spoken beat — it
+          // stays full ink throughout rather than dimming once said.
+          const brand = word.startsWith("Baymax") ? "is-brand" : "";
+          const className = [spoken, brand].filter(Boolean).join(" ") || undefined;
+          return (
+            <span key={i} className={className}>
+              {word}
+            </span>
+          );
+        })}
       </p>
 
       <div className="hero__stage">
@@ -53,28 +105,78 @@ export default function IntroSequence() {
           role="img"
           aria-label="Botony"
         >
-          <rect
-            ref={bar}
-            x={EYE.BAR_X}
-            y={EYE.BAR_Y}
-            width={EYE.BAR_W}
-            height={EYE.BAR_H}
-            fill="currentColor"
-          />
-          <circle
-            ref={eyeL}
-            cx={EYE.CX_L}
-            cy={EYE.CY}
-            r={EYE.R}
-            fill="currentColor"
-          />
-          <circle
-            ref={eyeR}
-            cx={EYE.CX_R}
-            cy={EYE.CY}
-            r={EYE.R}
-            fill="currentColor"
-          />
+          {/* The replacement body is behind the old eye system and hidden
+              until the glance begins. Its asset contains no face; the uniform
+              coordinate mapping only registers its removed-face centre to the
+              old eyes, which retain every animation ref and selector below. */}
+          <g
+            ref={body}
+            className="hero__body"
+            transform={newBodyTransform}
+            aria-hidden="true"
+          >
+            <image
+              href={newBody}
+              x="0"
+              y="0"
+              width="275"
+              height="370"
+              preserveAspectRatio="xMidYMid meet"
+            />
+          </g>
+
+          {/* The expression control, on the chest. It is drawn in the same
+              offset group the body is, so it is centred on the torso by
+              construction and rides the withdrawal's scale and rise without
+              knowing they happened — nothing here positions it against the
+              character, because it is in the character's coordinates.
+
+              Mounted only once the withdrawal has finished, which is the one
+              thing it needs from the sequence; it owns its own state, so
+              changing the expression re-renders this group and nothing else. */}
+          {dialogue.settled && (
+            <g transform={`translate(${BODY_OFFSET.x} ${BODY_OFFSET.y})`}>
+              <ExpressionSlider />
+            </g>
+          )}
+
+          {/* The eye system: the two eyes and the connector that joins them.
+              Grouped so the glance moves all three with one transform — the
+              bar cannot come away from the eyes or cross to the wrong side,
+              because nothing ever moves them relative to each other. */}
+          <g ref={eyes}>
+            <rect
+              ref={bar}
+              x={EYE.BAR_X}
+              y={EYE.BAR_Y}
+              width={EYE.BAR_W}
+              height={EYE.BAR_H}
+              fill="currentColor"
+            />
+            {/* Ellipses rather than circles, at rx = ry = R: identical to the
+                reference's <circle r="19"> as drawn, but with two radii the
+                dialogue can move independently. That is the whole expression
+                system — no element is added, swapped or hidden to change the
+                face, and with the radii untouched this is the character. */}
+            <ellipse
+              ref={eyeL}
+              className="hero__eye"
+              cx={EYE.CX_L}
+              cy={EYE.CY}
+              rx={EYE.R}
+              ry={EYE.R}
+              fill="currentColor"
+            />
+            <ellipse
+              ref={eyeR}
+              className="hero__eye"
+              cx={EYE.CX_R}
+              cy={EYE.CY}
+              rx={EYE.R}
+              ry={EYE.R}
+              fill="currentColor"
+            />
+          </g>
         </svg>
 
         {/* The one element that is the squircle, the textbox, the pill and the
@@ -112,16 +214,6 @@ export default function IntroSequence() {
         </div>
       </div>
 
-      <div ref={outro} className="hero__outro">
-        <p className="hero__eyebrow">Symptom guidance · Not a diagnosis</p>
-        <p className="hero__lede">
-          Describe how you feel in your own words. Botony helps you make sense
-          of it — and is direct about when to see someone who can examine you.
-        </p>
-        <button type="button" className="hero__replay" onClick={replay}>
-          Replay
-        </button>
-      </div>
     </div>
   );
 }

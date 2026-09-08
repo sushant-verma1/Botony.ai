@@ -1,13 +1,15 @@
 import { useEffect, useRef, type RefObject } from "react";
-import { createTimeline, spring, utils } from "animejs";
+import { animate, createTimeline, spring, utils } from "animejs";
 import {
   EYE,
+  IDLE,
   PALETTE,
   T,
   TILT_PEAK,
   boxHeight,
   boxWidth,
   circleFromEyeWidth,
+  lookDuration,
   shapeRadius,
   shapeSize,
 } from "./introConfig";
@@ -16,7 +18,7 @@ import {
  * The hero's state machine, as one Anime.js timeline:
  *
  *   INITIAL -> SHAPE_ENTER -> SHAPE_EXPAND -> INPUT_HOLD
- *           -> COLLAPSE -> CIRCLE -> EYE_FORMATION -> FINAL
+ *           -> COLLAPSE -> CIRCLE -> EYE_FORMATION -> IDLE
  *
  * Every state is a position on a single timeline, so the whole sequence runs
  * off one clock: seekable, replayable, and impossible to desynchronise the way
@@ -37,32 +39,43 @@ type El<E extends Element> = RefObject<E | null>;
 export type IntroRefs = {
   hero: El<HTMLElement>;
   svg: El<SVGSVGElement>;
+  /** Head, torso, arms and legs — everything but the eyes. */
+  body: El<SVGGElement>;
+  /** The eyes and their connector as one unit; the glance moves this. */
+  eyes: El<SVGGElement>;
   bar: El<SVGRectElement>;
-  eyeL: El<SVGCircleElement>;
-  eyeR: El<SVGCircleElement>;
+  eyeL: El<SVGEllipseElement>;
+  eyeR: El<SVGEllipseElement>;
   box: El<HTMLElement>;
   content: El<HTMLElement>;
   headline: El<HTMLElement>;
-  outro: El<HTMLElement>;
 };
 
-/** Returns a callback that plays the sequence again from a clean slate. */
-export function useIntroTimeline(refs: IntroRefs): () => void {
+/** Returns a callback that plays the sequence again from a clean slate.
+ *
+ *  `onSettled`, if given, fires once — right after the glance finishes and the
+ *  character has dropped into its settle position — which is what the caller
+ *  uses to start the spoken line without a click. */
+export function useIntroTimeline(
+  refs: IntroRefs,
+  onSettled?: () => void,
+): () => void {
   const replay = useRef<() => void>(() => {});
 
   useEffect(() => {
     const hero = refs.hero.current;
     const svg = refs.svg.current;
+    const body = refs.body.current;
+    const eyes = refs.eyes.current;
     const bar = refs.bar.current;
     const eyeL = refs.eyeL.current;
     const eyeR = refs.eyeR.current;
     const box = refs.box.current;
     const content = refs.content.current;
     const headline = refs.headline.current;
-    const outro = refs.outro.current;
     if (
-      !hero || !svg || !bar || !eyeL || !eyeR ||
-      !box || !content || !headline || !outro
+      !hero || !svg || !body || !eyes || !bar || !eyeL || !eyeR ||
+      !box || !content || !headline
     ) {
       return;
     }
@@ -93,24 +106,31 @@ export function useIntroTimeline(refs: IntroRefs): () => void {
       });
       utils.set(content, { opacity: 0 });
       utils.set(headline, { opacity: 0, y: 18 });
-      utils.set(svg, { opacity: 0 });
-      utils.set([eyeL, eyeR], { cx: EYE.CX_MID });
+      // scale: the post-dialogue pull-back's only property, reset here so a
+      // replay always starts from the close framing (see useDialogue).
+      utils.set(svg, { opacity: 0, translateY: 0, scale: 1 });
+      utils.set(body, { opacity: 0 });
+      // The glance and the blink both rest at identity, so IDLE always starts
+      // from the geometry the SVG file draws.
+      utils.set(eyes, { translateX: 0 });
+      utils.set([eyeL, eyeR], { cx: EYE.CX_MID, scaleY: 1 });
       // The connector grows symmetrically out of the midpoint: its left edge
       // is translated to the centre while its width is zero, and the two
       // unwind together, which pins its centre at CX_MID for every frame.
       utils.set(bar, { width: 0, translateX: EYE.CX_MID - EYE.BAR_X });
-      utils.set(outro, { opacity: 0, y: 14 });
     };
 
-    /** The resting end state, for the reduced-motion path. */
+    /** The resting end state, for the reduced-motion path. The whole character
+     *  is present and still: no glance, and no blink loop, because this path
+     *  never creates one. */
     const toFinal = () => {
       toInitial();
       utils.set(box, { opacity: 0 });
       utils.set(svg, { opacity: 1 });
+      utils.set(body, { opacity: 1 });
       utils.set(eyeL, { cx: EYE.CX_L });
       utils.set(eyeR, { cx: EYE.CX_R });
       utils.set(bar, { width: EYE.BAR_W, translateX: 0 });
-      utils.set(outro, { opacity: 1, y: 0 });
     };
 
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -215,15 +235,95 @@ export function useIntroTimeline(refs: IntroRefs): () => void {
       .add(eyeR, { cx: EYE.CX_R, ease: splitSpring }, splitAt)
       .add(bar, { width: EYE.BAR_W, translateX: 0, ease: splitSpring }, splitAt);
 
-    // FINAL
+    // IDLE — the character is alive from here on. Three animations share one
+    // start beat and nothing else: no two of them write the same property on
+    // the same element, so each can be retimed in introConfig without any
+    // chance of disturbing the others.
+
+    // The blink is its own animation rather than a timeline position because it
+    // has to outlive the sequence — looping the timeline would restage the
+    // whole hero. It compresses each eye vertically and lets it come back up
+    // slightly slower; the width is never written, so the eye keeps exactly the
+    // shape the SVG draws, and the connector between them is untouched.
+    const blink = animate([eyeL, eyeR], {
+      scaleY: [
+        { to: 1, duration: IDLE.blinkHold },
+        { to: IDLE.blinkScale, duration: IDLE.blinkClose, ease: "inQuad" },
+        { to: 1, duration: IDLE.blinkOpen, ease: "outQuad" },
+      ],
+      loop: true,
+      autoplay: false,
+    });
+
+    // One glance: dart to a mark, hold the look, move on. The last leg has no
+    // dwell — the eyes simply come back to centre and stay there.
+    const dart = (to: number) => [
+      { to, duration: IDLE.lookStep, ease: "inOutSine" },
+      { to, duration: IDLE.lookDwell },
+    ];
+
+    const idleAt = splitAt + T.split;
+    tl.add(body, { opacity: 1, duration: IDLE.fade, ease: "out(2)" }, idleAt)
+      // The glance moves the eye *system*, so the connector travels with the
+      // eyes: the three shapes never move relative to each other, and the bar
+      // cannot cross an eye or appear to come from the wrong side.
+      .add(
+        eyes,
+        {
+          translateX: [
+            ...dart(-IDLE.lookShift),
+            ...dart(0),
+            ...dart(IDLE.lookShift),
+            { to: 0, duration: IDLE.lookStep, ease: "inOutSine" },
+          ],
+        },
+        idleAt,
+      )
+      // Looking left, the right eye (opposite the glance) travels a little
+      // further than the group; looking right, the left eye does. Applied on
+      // top of the group's translateX since eyeL/eyeR sit inside `eyes`.
+      .add(
+        eyeR,
+        {
+          translateX: [
+            ...dart(-IDLE.lookShiftOpposite),
+            ...dart(0),
+            ...dart(0),
+            { to: 0, duration: IDLE.lookStep, ease: "inOutSine" },
+          ],
+        },
+        idleAt,
+      )
+      .add(
+        eyeL,
+        {
+          translateX: [
+            ...dart(0),
+            ...dart(0),
+            ...dart(IDLE.lookShiftOpposite),
+            { to: 0, duration: IDLE.lookStep, ease: "inOutSine" },
+          ],
+        },
+        idleAt,
+      )
+      // Started from the timeline, not a timer, so the blink is on the same
+      // clock as everything else and replay is exact.
+      .call(() => blink.restart(), idleAt);
+
+    // Once the glance finishes, the whole character settles down a little —
+    // an easeInOut drop, not a bounce — and the spoken line picks up right
+    // after it lands. `lookDuration` is the glance's own total, so this can
+    // never drift out of step with it.
+    const glanceEndAt = idleAt + lookDuration;
     tl.add(
-      outro,
-      { opacity: 1, y: 0, duration: T.outroIn, ease: "out(3)" },
-      splitAt + T.split * 0.6,
-    );
+      svg,
+      { translateY: IDLE.settleShift, duration: IDLE.settleDuration, ease: "inOutQuad" },
+      glanceEndAt,
+    ).call(() => onSettled?.(), glanceEndAt + IDLE.settleDuration);
 
     tl.play();
     replay.current = () => {
+      blink.pause();
       toInitial();
       tl.restart();
     };
@@ -247,14 +347,15 @@ export function useIntroTimeline(refs: IntroRefs): () => void {
     return () => {
       window.clearTimeout(debounce);
       window.removeEventListener("resize", onResize);
+      blink.revert();
       tl.revert();
     };
     // Ref objects are stable for the life of the component, so this effect
     // runs once — listing them individually rather than the wrapper object
     // keeps it that way even though the caller builds the wrapper inline.
   }, [
-    refs.hero, refs.svg, refs.bar, refs.eyeL, refs.eyeR,
-    refs.box, refs.content, refs.headline, refs.outro,
+    refs.hero, refs.svg, refs.body, refs.eyes, refs.bar, refs.eyeL, refs.eyeR,
+    refs.box, refs.content, refs.headline, onSettled,
   ]);
 
   // Stable identity, so handing this to a button never re-renders the tree.
