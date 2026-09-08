@@ -215,22 +215,63 @@ export const ZOOM = {
  *
  *  The vertical budget is what the framing leaves: ZOOM puts the eyes (y 171
  *  here) three tenths down the scene, so on a short desktop viewport the
- *  visible artwork runs out around y 480. Everything here fits above that. */
+ *  visible artwork runs out around y 480. Everything here fits above that —
+ *  the face, the slider, the scale under it and the confirm button below that
+ *  are one stack sharing those 190 units, which is why the first four numbers
+ *  are tighter than the composition alone would want. */
 export const CHEST = {
-  /** The torso's centreline. The face and the slider are both centred on it. */
+  /** The torso's centreline. Everything in the stack is centred on it. */
   cx: 300,
   /** The top of the face — clear of the head, which ends at y 261. */
-  top: 300,
+  top: 288,
   /** What the face's 24-unit square is drawn to. */
-  face: 100,
+  face: 86,
   /** Between the face and the slider. */
-  gap: 18,
+  gap: 14,
   /** The slider. The torso is ~364 wide across the chest, so this leaves a
    *  comfortable margin either side at every viewport. */
   sliderW: 230,
-  sliderH: 34,
+  sliderH: 30,
+  /** The login form that takes the control's place once a rating is
+   *  confirmed. Same centreline and same top as the face, and the same
+   *  vertical budget the whole control stack had: 190 units from CHEST.top
+   *  runs out at y 478, just inside the framing. Its internal lengths are in
+   *  intro.css — what belongs here is the hole it is drawn into. */
+  formW: 240,
+  formH: 190,
+  /** The register form asks for five fields and two consents where the login
+   *  form asks for two fields, so it cannot be made to fit those 190 units at
+   *  a legible size. The character makes the room instead of the form giving
+   *  it up — see FORM_SHIFT. */
+  registerH: 300,
   /** Where the control rests before it is touched, on the same 0-100 scale
    *  the slider uses: the middle of the range, which is neutral — the thumb
    *  starts centred, with as much expression to give either way. */
   initial: 50,
+} as const;
+
+/** FORM_SHIFT — the character making room for the taller form.
+ *
+ *  Registering asks for five fields and two consents; signing in asks for two
+ *  fields. Rather than shrink the type until the difference fits, the
+ *  character steps back: it rises a little and scales down a little, in one
+ *  spring, whenever the register form is what the chest is showing.
+ *
+ *  It writes the same two properties the post-dialogue withdrawal does, on the
+ *  same element, from the resting values that withdrawal left behind — so the
+ *  artwork, the viewBox and the chest's coordinates are all untouched, and the
+ *  move is symmetric: coming back to the login form is this transition played
+ *  the other way, not a separate animation. */
+export const FORM_SHIFT = {
+  /** Of the scale the withdrawal left the character at, so this composes with
+   *  ZOOM.scale rather than replacing it. */
+  scale: 0.95,
+  /** How far it rises, as a fraction of the scene's height — the same way ZOOM
+   *  places the eye line, so the move is the same part of the composition at
+   *  every viewport instead of a fixed number of pixels. */
+  lift: 0.1,
+  /** Under half a second, per the brief. The bounce is what makes this read as
+   *  the character stepping back rather than the page resizing. */
+  duration: 460,
+  bounce: 0.28,
 } as const;

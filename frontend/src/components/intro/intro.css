@@ -11,6 +11,10 @@
    --------------------------------------------------------------------- */
 
 .hero__scene {
+  /* The finished character's width, and the only place it is decided: the
+     timeline measures it back off .hero__eyes, and the split caption spaces
+     itself by it. Overridden per breakpoint, never redefined. */
+  --hero-character: clamp(150px, 15vw, 248px);
   position: relative;
   display: grid;
   place-items: center;
@@ -26,6 +30,7 @@
    vertical centre the reference puts it on. */
 .hero__headline,
 .hero__dialogue,
+.hero__painLine,
 .hero__stage {
   grid-area: 1 / 1;
 }
@@ -71,7 +76,7 @@
    changes the circle the box collapses into, because the timeline derives
    that diameter by measuring this element. */
 .hero__eyes {
-  width: clamp(150px, 15vw, 248px);
+  width: var(--hero-character);
   height: auto;
   color: #03120e;
   opacity: 0; /* the timeline owns this */
@@ -296,6 +301,101 @@
   outline-offset: 3px;
 }
 
+/* Hovering the slider grows its drawing by 5%: the ball, and the travelled bar
+   to the left of it. Nothing moves. The ball scales about its own centre, so it
+   gets bigger where it stands and stays under the pointer. The bar scales on Y
+   only, about its own centreline, so it thickens in place: its length is the
+   value the control is holding, and stretching that would both push its tip out
+   past the ball and draw a rating higher than the one that is set. The
+   untravelled part is left out of this entirely — it is the room left to go,
+   not part of the control, and scaling it is what pushed the line outward.
+
+   The bar's Y factor is 1.4 rather than the ball's 1.05: 5% of a 3-unit bar is
+   0.15 of a unit and reads as nothing, so the two numbers are what each shape
+   needs to grow by the same visible amount. Safe to retune — no other geometry
+   depends on it, and Y cannot move anything.
+
+   `scale` rather than `transform`: ExpressionSlider's animation frame owns the
+   `transform` attribute on both of these, and the two properties compose — the
+   hover cannot fight the spring, and the spring cannot undo the hover. The
+   bar's origin is the one the frame already writes its scale about, so the two
+   agree by construction rather than by coincidence. */
+.hero__moodFill,
+.hero__moodThumb {
+  transform-box: fill-box;
+  transition: scale 180ms ease;
+}
+
+.hero__moodFill {
+  transform-origin: left center;
+}
+
+.hero__moodFill.is-hot {
+  scale: 1 1.4;
+}
+
+.hero__moodThumb {
+  transform-origin: center;
+}
+
+.hero__moodThumb.is-hot {
+  scale: 1.05;
+}
+
+/* A foreignObject clips to its own box, and a button that grows by 30% does
+   not fit in the box it is laid out in. Nothing else is drawn where it grows
+   into, so the slot simply stops clipping. */
+.hero__moodSlot {
+  overflow: visible;
+}
+
+/* Confirm. Laid out by a foreignObject in the character's coordinates, like
+   the slider above it, so these lengths are the artwork's units and the button
+   scales with the chest it sits on.
+
+   Disabled until the slider has been moved: greyed to the same tint the
+   untravelled track uses, and — because the growth is :enabled:hover — inert
+   to the pointer as well as to the keyboard. */
+.hero__moodConfirm {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* The sequence's own squircle corner — shapeRadius takes a fifth of the
+     size — opened up a little, because a fifth of 28 units reads as square at
+     the size the chest gives this. */
+  border-radius: 9px;
+  background: #03120e;
+  color: #ffffff;
+  font-family: var(--sans);
+  font-size: 13px;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: scale 180ms ease, box-shadow 200ms ease,
+    background-color 200ms ease, color 200ms ease;
+}
+
+.hero__moodConfirm:disabled {
+  background: rgba(3, 18, 14, 0.16);
+  color: rgba(3, 18, 14, 0.45);
+  cursor: not-allowed;
+}
+
+/* Set by ExpressionSlider on pointerenter, not by :hover — Chrome does not
+   carry :hover into foreignObject content, so the CSS state never arrives.
+   :enabled is still worth stating: it is the rule that cannot be got wrong. */
+.hero__moodConfirm:enabled.is-hot {
+  scale: 1.1;
+  /* Lifted off the chest rather than tinted: the button keeps its ink, and
+     the shadow is the same ink at low alpha, so no new colour appears. */
+  box-shadow: 0 5px 16px rgba(3, 18, 14, 0.32);
+}
+
+.hero__moodConfirm:focus-visible {
+  outline: 2px solid #03120e;
+  outline-offset: 2px;
+}
+
 /* The spoken line. Laid out like .hero__headline — centred in the same
    shared cell, directly over the character — but with a lower z-index than
    .hero__stage, so the character sits in front of its own words instead of
@@ -327,18 +427,21 @@
    Colour carries the emphasis instead: the word being said right now (.is-active)
    is full ink, and eases down to a quieter shade (.is-said) the moment the next
    word takes over, so the read of the line always points at the current word. */
-.hero__dialogue span {
+.hero__dialogue span,
+.hero__pain span {
   opacity: 0;
   color: #03120e;
   transition: opacity 240ms ease, color 240ms ease-in-out;
 }
 
-.hero__dialogue span.is-active {
+.hero__dialogue span.is-active,
+.hero__pain span.is-active {
   opacity: 1;
   color: #03120e;
 }
 
-.hero__dialogue span.is-said {
+.hero__dialogue span.is-said,
+.hero__pain span.is-said {
   opacity: 1;
   color: rgba(3, 18, 14, 0.55);
 }
@@ -355,8 +458,237 @@
 
 /* The space between words has to survive JSX collapsing whitespace between
    sibling elements, so it is drawn here rather than left in the markup. */
-.hero__dialogue span + span::before {
+.hero__dialogue span + span::before,
+.hero__pain span + span:not(.hero__painDot)::before {
   content: " ";
+}
+
+
+/* ---- the question, split around the character -------------------------- */
+
+/* One row across the shared centre cell: the left half, a gap, the right
+   half. Nothing here is positioned against the artwork — the gap IS the
+   artwork's width, so the two halves cannot land on the character at any
+   viewport. Same z-index as the spoken line, so the character is in front of
+   both halves and the stop crosses behind it rather than over it. */
+.hero__painLine {
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  width: min(1180px, 94vw);
+  /* The head spans HEAD_W / EYE.VIEW_W = 1.55 character widths at the eye
+     line, and the withdrawal leaves it at ZOOM.scale — 1.4 — plus room. */
+  gap: calc(var(--hero-character) * 1.6);
+  /* ZOOM.eyeLine rests the eyes 0.3 down the scene and this cell is centred
+     on 0.5, so this is the line the character is looking along. */
+  translate: 0 -20svh;
+  pointer-events: none;
+  user-select: none;
+}
+
+.hero__pain {
+  flex: 1;
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 20px;
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  text-wrap: pretty;
+}
+
+/* Each half reads toward the character it is speaking around. */
+.hero__pain--left {
+  text-align: right;
+}
+
+.hero__pain--right {
+  text-align: left;
+}
+
+/* The travelling stop. Inline, so its home is wherever the sentence ends up;
+   PainCaption writes the one transform that carries it across, and nothing
+   here may write `transform` or the flight would be overwritten. */
+.hero__painDot {
+  display: inline-block;
+  will-change: transform;
+}
+
+/* Its destination: laid out, never seen. It holds the place at the head of
+   the other half that the stop is flying to. */
+.hero__painDot.is-ghost {
+  visibility: hidden;
+}
+
+/* ---- the handoff to the login form ------------------------------------- */
+
+/* Confirming ends the question. The control and the caption fade out together
+   — one duration, one easing, set here rather than in either component — and
+   IntroSequence unmounts both on the animationend this fires, so the form
+   arrives into an empty cell rather than over two invisible ones.
+
+   Opacity only, both ways: nothing moves, so there is no reduced-motion case
+   to answer and the character underneath is left exactly where it is. */
+.hero__mood.is-leaving,
+.hero__painLine.is-leaving {
+  animation: hero-fade-out 420ms ease both;
+  pointer-events: none;
+}
+
+@keyframes hero-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* The form, on the chest the control was on — same group, same coordinates,
+   so it is centred on the torso and scales with the character by construction
+   (see CHEST.formW in introConfig).
+
+   A foreignObject makes CSS pixels the artwork's units: ~1.45 screen pixels
+   each at desktop, and less as the character shrinks. So the lengths below are
+   not the sizes shadcn/ui ships — they are those sizes divided back out, which
+   is why they are written here rather than as utility classes on the markup.
+   Unlayered, so they win over the utilities the components carry (see
+   index.css); everything not restated is the registry's. */
+.hero__loginSlot {
+  overflow: visible;
+}
+
+.hero__login {
+  animation: hero-fade-in 420ms ease both;
+  font-family: var(--sans);
+  /* What the controls below inherit — the registry's own `text-sm` is 14 of
+     the chest's units, which is half again too big at this scale. */
+  font-size: 11px;
+  color: #03120e;
+}
+
+/* shadcn/ui is written against Tailwind's preflight, which this project
+   deliberately does not load (index.css says why). Without it a `border`
+   utility sets a width against a style of `none` and the fields have no
+   outline at all. This is the part of preflight those components need, and it
+   reaches nothing outside the form. */
+.hero__login,
+.hero__login *,
+.hero__login *::before,
+.hero__login *::after {
+  box-sizing: border-box;
+}
+
+.hero__login button,
+.hero__login input,
+.hero__login label {
+  font: inherit;
+  margin: 0;
+}
+
+/* The password reveal — the only button in the form that is not the submit,
+   and the one thing here that has to stay quieter than the field it sits in. */
+.hero__login button:not([type="submit"]) {
+  font-size: 9.5px;
+}
+
+.hero__login label {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.hero__login input {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
+  border-width: 1px;
+  border-radius: 7px;
+}
+
+.hero__login input:focus-visible {
+  --tw-ring-shadow: 0 0 0 2px rgba(3, 18, 14, 0.18);
+  border-color: #03120e;
+}
+
+/* The stack has the same 190 units the face, slider, scale and button shared,
+   so the rhythm the registry ships at page scale has to close up to fit it —
+   the fields keep their own proportions, the air between them is what gives. */
+.hero__login [data-slot="field-group"] {
+  gap: 10px;
+}
+
+.hero__login [data-slot="field"] {
+  gap: 5px;
+}
+
+/* The submit. The same ink and the same corner the Confirm button had, so the
+   form reads as the next state of that control rather than a new element. */
+.hero__login button[type="submit"] {
+  height: 26px;
+  font-size: 11px;
+  border-radius: 7px;
+  background: #03120e;
+  color: #ffffff;
+}
+
+.hero__login [data-slot="field-error"],
+.hero__login p {
+  font-size: 9.5px;
+}
+
+/* The register form carries five fields and two consents where the login form
+   carries two fields, so it closes the same rhythm up further still. The
+   fields themselves are untouched — the air between them is what gives, and
+   the character makes up the rest of the difference by stepping back (see
+   FORM_SHIFT in introConfig). */
+.hero__login.is-register [data-slot="field-group"] {
+  gap: 6px;
+}
+
+.hero__login.is-register [data-slot="field"] {
+  gap: 3px;
+}
+
+.hero__login.is-register label {
+  font-size: 9.5px;
+}
+
+.hero__login.is-register input,
+.hero__login.is-register button[type="submit"] {
+  height: 22px;
+  border-radius: 6px;
+}
+
+/* The consents. A native checkbox rather than another registry component —
+   it is a checkbox, and the only thing it needs at this scale is to stop
+   being the browser's default beside 11-unit type. The input rules above size
+   text boxes, so what they set has to be unset here — and this has to follow
+   them, because `.hero__login.is-register input` matches a checkbox too and
+   is exactly as specific as this selector. */
+.hero__login input[type="checkbox"] {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  margin-top: 1px;
+  flex: none;
+  accent-color: #03120e;
+}
+
+.hero__login .hero__consent {
+  gap: 6px;
+  align-items: start;
+}
+
+.hero__login .hero__consent label {
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+/* Plays on arrival from the control, and again each time the two forms swap:
+   the wrapper is keyed on which form it is, so React replaces the element and
+   this restarts. Opacity only — what moves during a swap is the character
+   underneath, which is the point of the move. */
+@keyframes hero-fade-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /* ---- intentional responsive states ------------------------------------ */
@@ -369,6 +701,9 @@
   }
   .hero__dialogue {
     translate: 0 -60px;
+  }
+  .hero__pain {
+    font-size: 17px;
   }
 }
 
@@ -387,6 +722,16 @@
   .hero__dialogue {
     translate: 0 -52px;
   }
+  /* Two columns either side of the character is a tight fit on a phone: the
+     type steps down and the gap holds only what the head actually needs. */
+  .hero__painLine {
+    width: 96vw;
+    gap: calc(var(--hero-character) * 1.35);
+    translate: 0 -16svh;
+  }
+  .hero__pain {
+    font-size: 14.5px;
+  }
   .hero__input {
     padding: 20px 20px 4px;
     font-size: 16px; /* below 16 iOS zooms the page on focus */
@@ -398,8 +743,8 @@
   .hero__hint {
     font-size: 11.5px;
   }
-  .hero__eyes {
-    width: clamp(132px, 38vw, 168px);
+  .hero__scene {
+    --hero-character: clamp(132px, 38vw, 168px);
   }
 }
 

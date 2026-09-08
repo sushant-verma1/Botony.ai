@@ -4,11 +4,25 @@ import toast from "react-hot-toast";
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
 import { chatAPI } from "../services/api/chatApi";
+import {
+  attachmentAPI,
+  mimeToKind,
+  ALLOWED_ATTACHMENT_MIME_TYPES,
+  MAX_IMAGE_BYTES,
+  MAX_PDF_BYTES,
+} from "../services/api/attachmentApi";
 import type { ChatMessage, ConversationSummary } from "../types/chat";
 import MessageBubble from "./MessageBubble";
 import Spinner from "./Spinner";
 import ConversationSidebar from "./ConversationSidebar";
 import ConfirmDialog from "./ConfirmDialog";
+
+interface PendingAttachment {
+  attachmentId: string;
+  name: string;
+  status: "uploading" | "ready" | "error";
+  error?: string;
+}
 
 export default function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -27,6 +41,8 @@ export default function Chat() {
   const [loadingOlder, setLoadingOlder] = useState<boolean>(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const isPrependingRef = useRef<boolean>(false);
@@ -192,6 +208,72 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const handleFileSelect = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = "";
+
+    for (const file of files) {
+      const kind = mimeToKind(file.type);
+      if (!kind) {
+        toast.error(`${file.name}: unsupported file type`);
+        continue;
+      }
+      const maxBytes = kind === "IMAGE" ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
+      if (file.size > maxBytes) {
+        toast.error(`${file.name}: file is too large`);
+        continue;
+      }
+
+      const placeholderId = crypto.randomUUID();
+      setAttachments((prev) => [
+        ...prev,
+        { attachmentId: placeholderId, name: file.name, status: "uploading" },
+      ]);
+
+      try {
+        const { data: signature } = await attachmentAPI.requestSignature(
+          kind,
+          file.type,
+          file.size,
+        );
+        await attachmentAPI.uploadToCloudinary(signature, file);
+        await attachmentAPI.confirm(signature.attachmentId);
+
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.attachmentId === placeholderId
+              ? { ...a, attachmentId: signature.attachmentId, status: "ready" }
+              : a,
+          ),
+        );
+      } catch (err) {
+        const message = axios.isAxiosError(err)
+          ? err.response?.data?.message || "Upload failed"
+          : "Upload failed";
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.attachmentId === placeholderId
+              ? { ...a, status: "error", error: message }
+              : a,
+          ),
+        );
+        toast.error(`${file.name}: ${message}`);
+      }
+    }
+  };
+
+  const handleRemoveAttachment = async (attachmentId: string) => {
+    setAttachments((prev) => prev.filter((a) => a.attachmentId !== attachmentId));
+    try {
+      await attachmentAPI.remove(attachmentId);
+    } catch {
+      // Best-effort cleanup; the row is orphaned but never bound to a
+      // message, so it carries no information and is swept later.
+    }
+  };
+
   const handleSend = async (e: React.SubmitEvent) => {
     e.preventDefault();
 
@@ -206,12 +288,20 @@ export default function Chat() {
       createdAt: new Date().toISOString(),
     };
 
+    const attachmentIds = attachments
+      .filter((a) => a.status === "ready")
+      .map((a) => a.attachmentId);
+
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setLoading(true);
 
     try {
-      const { data } = await chatAPI.sendMessage(conversationId, trimmed);
+      const { data } = await chatAPI.sendMessage(
+        conversationId,
+        trimmed,
+        attachmentIds.length > 0 ? attachmentIds : undefined,
+      );
 
       const assistantMessage: ChatMessage = {
         id: data.assistantMessageId,
@@ -222,6 +312,7 @@ export default function Chat() {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+      setAttachments([]);
       fetchConversations();
     } catch (err) {
       const message = axios.isAxiosError(err)
@@ -306,6 +397,7 @@ export default function Chat() {
         ref={messagesContainerRef}
         onScroll={handleMessagesScroll}
         data-testid="messages-container"
+        data-lenis-prevent
         className="flex-1 overflow-y-auto px-4 py-6 space-y-4"
       >
         {loadingOlder && (
@@ -359,7 +451,49 @@ export default function Chat() {
       </div>
 
       <div className="bg-white border-t px-4 py-4 shadow-sm">
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 max-w-3xl mx-auto mb-2">
+            {attachments.map((a) => (
+              <span
+                key={a.attachmentId}
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
+                  a.status === "error"
+                    ? "bg-red-50 border-red-200 text-red-600"
+                    : "bg-gray-100 border-gray-200 text-gray-600"
+                }`}
+              >
+                {a.status === "uploading" && <Spinner className="h-3 w-3" />}
+                {a.name}
+                <button
+                  type="button"
+                  onClick={() => handleRemoveAttachment(a.attachmentId)}
+                  aria-label={`Remove ${a.name}`}
+                  className="text-gray-400 hover:text-gray-700"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <form onSubmit={handleSend} className="flex gap-3 max-w-3xl mx-auto">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ALLOWED_ATTACHMENT_MIME_TYPES.join(",")}
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading || switchingChat || !conversationId}
+            aria-label="Attach a photo or report"
+            className="border border-gray-300 text-gray-500 rounded-xl px-3.5 py-2.5 hover:bg-gray-50 disabled:opacity-50"
+          >
+            📎
+          </button>
           <input
             type="text"
             value={input}
@@ -372,7 +506,11 @@ export default function Chat() {
           <button
             type="submit"
             disabled={
-              loading || switchingChat || !input.trim() || !conversationId
+              loading ||
+              switchingChat ||
+              !input.trim() ||
+              !conversationId ||
+              attachments.some((a) => a.status === "uploading")
             }
             className="bg-blue-600 text-white px-5 py-2.5 rounded-xl hover:bg-blue-700 disabled:opacity-50 font-medium flex items-center justify-center gap-2"
           >

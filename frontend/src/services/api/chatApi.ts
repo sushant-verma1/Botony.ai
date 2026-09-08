@@ -10,10 +10,14 @@ export const chatAPI = {
   createConversation: () =>
     api.post<NewChatResponse>('/chat/newchat'),
 
-  sendMessage: (conversationId: string, message: string) =>
+  sendMessage: (
+    conversationId: string,
+    message: string,
+    attachmentIds?: string[],
+  ) =>
     api.post<SendMessageResponse>(
       `/chat/${conversationId}/message`,
-      { content: message }
+      { content: message, attachmentIds }
     ),
 
   getHistory: (

@@ -5,7 +5,16 @@ import {
   getEmergencyResponse,
   getMedicalDisclaimer,
 } from "../utils/safety.util.js";
-import { getClaudeResponse, ClaudeServiceError, Message } from "../services/claude.js";
+import { generateResponse, AIServiceError } from "../services/ai/index.js";
+import type { AIMessage, AIAttachmentContent } from "../services/ai/index.js";
+import {
+  validateAttachmentsForMessage,
+  bindAttachmentsToMessage,
+  isDocumentAttachment,
+  getAiImageUrl,
+  extractPdfText,
+  AttachmentError,
+} from "../services/attachment.service.js";
 import logger from "../services/logger.js";
 
 export const newChatController = async (
@@ -133,7 +142,7 @@ export const messageController = async (
   res: Express.Response,
 ) => {
   const conversationId = req.params.chatid;
-  const { content } = req.body;
+  const { content, attachmentIds = [] } = req.body;
   logger.info("Message received", {
     userId: req.user.userId,
     conversationId,
@@ -170,6 +179,19 @@ export const messageController = async (
       conversationId,
     });
     return res.status(403).json({ message: "Not allowed" });
+  }
+
+  let validatedAttachments;
+  try {
+    validatedAttachments = await validateAttachmentsForMessage(
+      req.user.userId,
+      attachmentIds,
+    );
+  } catch (error) {
+    if (error instanceof AttachmentError) {
+      return res.status(error.status).json({ message: error.message });
+    }
+    throw error;
   }
 
   const isEmergency = detectEmergency(content);
@@ -209,6 +231,19 @@ export const messageController = async (
 
       return { userMessage, assistantMessage, emergencyResponse };
     });
+
+    // Patient safety first: the emergency response must reach the user even
+    // if attaching their files fails, so this is logged rather than thrown.
+    try {
+      await bindAttachmentsToMessage(attachmentIds, result.userMessage.id);
+    } catch (error) {
+      logger.warn("Could not bind attachments to an emergency message", {
+        conversationId,
+        userId: req.user.userId,
+        message: error instanceof Error ? error.message : "unknown",
+      });
+    }
+
     logger.info("Emergency response sent", {
       conversationId,
     });
@@ -230,6 +265,8 @@ export const messageController = async (
         emergencyDetected: false,
       },
     });
+
+    await bindAttachmentsToMessage(attachmentIds, userMessage.id);
 
     const previousMessages = await prisma.message.findMany({
       where: { conversationId },
@@ -253,7 +290,7 @@ export const messageController = async (
       data: conversationUpdate,
     });
 
-    const messagesForClaude: Message[] = previousMessages
+    const messagesForClaude: AIMessage[] = previousMessages
       .reverse()
       .map((msg) => ({
         role: msg.role,
@@ -281,8 +318,24 @@ export const messageController = async (
       });
     }
 
-    const claudeResponse =
-      (await getClaudeResponse(messagesForClaude)) + getMedicalDisclaimer();
+    // Only attachments explicitly attached to *this* message are sent —
+    // history is never re-sent with old attachments included.
+    const aiAttachments: AIAttachmentContent[] = await Promise.all(
+      validatedAttachments.map(async (attachment) => {
+        if (isDocumentAttachment(attachment)) {
+          const text = await extractPdfText(attachment);
+          return {
+            type: "text" as const,
+            label: "attached document",
+            text,
+          };
+        }
+        return { type: "image" as const, url: getAiImageUrl(attachment) };
+      }),
+    );
+
+    const aiResult = await generateResponse(messagesForClaude, aiAttachments);
+    const claudeResponse = aiResult.text + getMedicalDisclaimer();
 
     const assistantMessage = await prisma.message.create({
       data: {
@@ -301,8 +354,17 @@ export const messageController = async (
       response: claudeResponse,
     });
   } catch (error: any) {
-    if (error instanceof ClaudeServiceError) {
-      logger.error("Claude service unavailable", {
+    if (error instanceof AttachmentError) {
+      logger.warn("Attachment processing failed for message", {
+        conversationId,
+        userId: req.user.userId,
+        message: error.message,
+      });
+      return res.status(error.status).json({ message: error.message });
+    }
+
+    if (error instanceof AIServiceError) {
+      logger.error("AI service unavailable", {
         originalMessage: error.originalMessage,
         conversationId,
         userId: req.user.userId,
@@ -311,7 +373,7 @@ export const messageController = async (
       return res.status(error.status).json({ message: error.userMessage });
     }
 
-    logger.error("Claude error", {
+    logger.error("AI error", {
       message: error.message,
       stack: error.stack,
       conversationId,

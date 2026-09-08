@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
+import { ReactLenis } from "lenis/react";
 import Login from "./components/Login";
 import Register from "./components/Register";
 import Chat from "./components/Chat";
@@ -29,6 +30,11 @@ export function AppRoutes() {
 function App() {
   return (
     <BrowserRouter>
+      {/* Page-level smooth scrolling only — the hero character's animation
+          timeline is driven separately and is never wired to Lenis. Lenis
+          honours prefers-reduced-motion itself, so no extra check is needed
+          here. */}
+      <ReactLenis root options={{ anchors: true }} />
       <Toaster position="top-right" />
       <AppRoutes />
     </BrowserRouter>

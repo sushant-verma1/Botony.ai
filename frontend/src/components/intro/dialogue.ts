@@ -85,12 +85,12 @@ export type Expression = keyof typeof EXPRESSION;
 export const MORPH = 0.34;
 export const LEAD = 0.2;
 
-type Phrase = {
-  start: number;
-  end: number;
-  expression: Expression;
-  text: string;
-};
+/** A phrase with measured start and end, in seconds. Everything the caption
+ *  does — the script, and how much of it has been said at t — needs only
+ *  this, so any timed line can borrow it; painLine.ts is the other one. */
+export type Timed = { start: number; end: number; text: string };
+
+type Phrase = Timed & { expression: Expression };
 
 /** Where the recording actually says each phrase, in seconds.
  *
@@ -138,15 +138,13 @@ export const DIALOGUE: readonly Phrase[] = [
 
 const wordsOf = (text: string) => (text ? text.split(" ") : []);
 
-/** Every word of the script, in order. The caption renders all of them from
- *  the first frame and only changes their opacity, so the paragraph's height
- *  is fixed and revealing a word cannot reflow the page under the character. */
-export const SCRIPT = DIALOGUE.flatMap((p) => wordsOf(p.text));
+/** Every word of a line, in order. The caption renders all of them from the
+ *  first frame and only changes their opacity, so the paragraph's height is
+ *  fixed and revealing a word cannot reflow the page under the character. */
+export const scriptOf = (line: readonly Timed[]) =>
+  line.flatMap((p) => wordsOf(p.text));
 
-/** Index of each phrase's first word in SCRIPT. */
-const WORD_FROM = DIALOGUE.map((_, i) =>
-  DIALOGUE.slice(0, i).reduce((n, p) => n + wordsOf(p.text).length, 0),
-);
+export const SCRIPT = scriptOf(DIALOGUE);
 
 /** When there is nothing left to animate; the render loop stops here. */
 export const END = DIALOGUE[DIALOGUE.length - 1].start + MORPH;
@@ -197,24 +195,28 @@ export function stateAt(t: number): FaceState {
   const rx = was.rx + (to.rx - was.rx) * e;
   const ry = was.ry + (to.ry - was.ry) * e;
 
-  return { rx, ry, ...barFor(rx), words: wordsAt(t) };
+  return { rx, ry, ...barFor(rx), words: wordsSpoken(DIALOGUE, t) };
 }
 
-/** Words are revealed evenly across the phrase that carries them: the phrase
+/** How many words of `line` have been said at t.
+ *
+ *  Words are revealed evenly across the phrase that carries them: the phrase
  *  boundaries are measured, the word boundaries inside one are not, and
  *  pretending otherwise would only put them in the wrong place more precisely. */
-function wordsAt(t: number): number {
+export function wordsSpoken(line: readonly Timed[], t: number): number {
   let words = 0;
-  for (let i = 0; i < DIALOGUE.length; i++) {
-    const p = DIALOGUE[i];
+  let from = 0;
+  for (const p of line) {
     if (t < p.start) break;
     const n = wordsOf(p.text).length;
-    if (!n) continue;
-    words =
-      WORD_FROM[i] +
-      (t >= p.end
-        ? n
-        : Math.min(n, 1 + Math.floor(((t - p.start) / (p.end - p.start)) * n)));
+    if (n) {
+      words =
+        from +
+        (t >= p.end
+          ? n
+          : Math.min(n, 1 + Math.floor(((t - p.start) / (p.end - p.start)) * n)));
+    }
+    from += n;
   }
   return words;
 }

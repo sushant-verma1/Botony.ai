@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import scanning from "../../assets/scanning.wav";
 import { FACE, faceAt, nameAt } from "./expressions";
 import { settled, squash, step, type Spring } from "./jelly";
 import { CHEST } from "./introConfig";
@@ -53,10 +54,58 @@ const CY = CHEST.top + CHEST.face + CHEST.gap + CHEST.sliderH / 2;
 const TRAVEL = CHEST.sliderW - THUMB_R * 2;
 const px = (value: number) => X0 + THUMB_R + (TRAVEL * value) / 100;
 
+/** The scale under the control: an axis with a tick at each of the ten steps
+ *  the question asks about, ends and midpoint drawn heavier and longer. No
+ *  numerals — the line says 1 to 10 by having ten intervals, and the face
+ *  above it is what actually reads the value.
+ *
+ *  Ticks are placed with px(), the same function the thumb is drawn with, so
+ *  the thumb passes over its tick exactly rather than nearly. */
+const SCALE = {
+  stops: 11,
+  /** Below the slider. Everything from here down is measured off the control
+   *  rather than written as a coordinate, so the whole stack moves together
+   *  when CHEST is retuned to fit the framing. */
+  y: CHEST.top + CHEST.face + CHEST.gap + CHEST.sliderH + 9,
+  tick: 7,
+  tickMajor: 13,
+  weight: 1.4,
+  weightMajor: 2.6,
+} as const;
+
+/** The confirm button, under the scale. Its corner is the sequence's own
+ *  squircle rule (shapeRadius: a fifth of the size), so it is the same corner
+ *  the hero entered as rather than a new one. The last of the chest's vertical
+ *  budget: its bottom edge is y 473, inside the ~480 the framing leaves. */
+const BUTTON = {
+  w: 104,
+  h: 28,
+  y: SCALE.y + SCALE.tickMajor / 2 + 11,
+} as const;
+
 const still = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-export default function ExpressionSlider() {
+type Props = {
+  /** Fade this out: the rating has been confirmed and the form is next. The
+   *  sequence owns the phase, so the control does not decide when it leaves —
+   *  it only reports the press and wears the class it is given. */
+  leaving: boolean;
+  onConfirm: () => void;
+};
+
+export default function ExpressionSlider({ leaving, onConfirm }: Props) {
   const [value, setValue] = useState<number>(CHEST.initial);
+  /** Whether the slider has been moved. The rating starts at CHEST.initial and
+   *  stays there, but a value nobody chose is not an answer — so confirming is
+   *  off until the control has actually been used, and there is no way to
+   *  reach it by clicking through. */
+  const [touched, setTouched] = useState(false);
+  /** Pointer over the slider, and over the button. React state rather than CSS
+   *  :hover for both: what grows on the slider is the drawing beside the input
+   *  rather than the input itself, and Chrome does not carry :hover into
+   *  foreignObject content at all, so the button could never see it. */
+  const [hot, setHot] = useState(false);
+  const [hotConfirm, setHotConfirm] = useState(false);
   const face = faceAt(value);
 
   const thumb = useRef<SVGGElement>(null);
@@ -67,6 +116,11 @@ export default function ExpressionSlider() {
   const spring = useRef<Spring>({ x: CHEST.initial, v: 0 });
   const frame = useRef(0);
   const last = useRef(0);
+  /** The scan, played when the rating is confirmed. Built on the first press
+   *  rather than at mount: 845KB of WAV that a visitor who never confirms
+   *  should not be made to fetch. A press is a user gesture, so this one needs
+   *  none of the refused-autoplay handling the intro's other cues carry. */
+  const scan = useRef<HTMLAudioElement | null>(null);
 
   /** The whole of the visual layer: two transforms, written directly. */
   const paint = useCallback((x: number, sx: number, sy: number, track: number) => {
@@ -97,15 +151,28 @@ export default function ExpressionSlider() {
     frame.current = requestAnimationFrame(tick);
   }, [paint]);
 
+  /** Confirm: play the scan, and hand the sequence on. The fade this starts
+   *  takes the pointer off the group, so there is no second press to guard
+   *  against. */
+  const confirm = useCallback(() => {
+    const a = (scan.current ??= new Audio(scanning));
+    a.currentTime = 0;
+    void a.play().catch(() => {});
+    onConfirm();
+  }, [onConfirm]);
+
   useEffect(() => {
     paint(CHEST.initial, 1, 1, 1);
+    // The scan is deliberately not stopped here. Confirming starts a 4.4s cue
+    // and then fades this control out in 420ms, so pausing it on unmount cuts
+    // off the sound the press was for, three quarters of it unheard.
     return () => {
       if (frame.current) cancelAnimationFrame(frame.current);
     };
   }, [paint]);
 
   return (
-    <g className="hero__mood">
+    <g className={`hero__mood${leaving ? " is-leaving" : ""}`}>
       {/* The reference draws each face in a 24-unit square; this is the only
           thing that changes about it — the size it is drawn at. Scaling the
           group rather than the numbers keeps the artwork's proportions and
@@ -154,6 +221,7 @@ export default function ExpressionSlider() {
             than redrawn, and it thins as it is pulled. */}
         <rect
           ref={fill}
+          className={`hero__moodFill${hot ? " is-hot" : ""}`}
           x={0}
           y={-TRACK_H / 2}
           width={CHEST.sliderW}
@@ -163,10 +231,51 @@ export default function ExpressionSlider() {
         />
       </g>
 
+      {/* The scale. Static: it is the range the control moves over, so nothing
+          about it depends on the value, and it is drawn once. */}
+      <g stroke="#03120e" pointerEvents="none">
+        <line
+          x1={px(0)}
+          x2={px(100)}
+          y1={SCALE.y}
+          y2={SCALE.y}
+          strokeWidth={SCALE.weight}
+          strokeOpacity={0.28}
+          strokeLinecap="round"
+        />
+        {Array.from({ length: SCALE.stops }, (_, i) => {
+          // Both ends and the midpoint — the three places on a 1-to-10 scale
+          // anyone actually reads.
+          const major = i === 0 || i === SCALE.stops - 1 || i * 2 === SCALE.stops - 1;
+          const x = px((i * 100) / (SCALE.stops - 1));
+          const h = (major ? SCALE.tickMajor : SCALE.tick) / 2;
+          return (
+            <line
+              key={i}
+              x1={x}
+              x2={x}
+              y1={SCALE.y - h}
+              y2={SCALE.y + h}
+              strokeWidth={major ? SCALE.weightMajor : SCALE.weight}
+              strokeOpacity={major ? 1 : 0.34}
+              strokeLinecap="round"
+            />
+          );
+        })}
+      </g>
+
       {/* Drawn at the origin so that scaling it is about its own centre — the
-          stretch has to leave the thumb where it is, not slide it. */}
-      <g ref={thumb} pointerEvents="none">
-        <circle r={THUMB_R} fill="#03120e" />
+          stretch has to leave the thumb where it is, not slide it.
+
+          The hover growth is a wrapper rather than another factor in the
+          transform below: the loop owns that attribute, and the CSS `scale`
+          property composes with it instead of overwriting it. The two scale
+          about their own centres, so the thumb grows where it stands and stays
+          under the pointer. */}
+      <g className={`hero__moodThumb${hot ? " is-hot" : ""}`} pointerEvents="none">
+        <g ref={thumb}>
+          <circle r={THUMB_R} fill="#03120e" />
+        </g>
       </g>
 
       {/* A foreignObject lays the input out in CSS pixels inside the
@@ -201,10 +310,38 @@ export default function ExpressionSlider() {
             } else {
               run();
             }
+            setTouched(true);
           }}
+          onPointerEnter={() => setHot(true)}
+          onPointerLeave={() => setHot(false)}
           aria-label="Expression"
           aria-valuetext={nameAt(value)}
         />
+      </foreignObject>
+
+      {/* Confirm. A real <button disabled>, in the character's coordinates the
+          same way the slider is: the disabled state, the focus ring and the
+          keyboard are the platform's, and the greying keys off :disabled, so
+          it cannot look enabled while it is not. The growth is gated twice —
+          a disabled button receives no pointer events to set `hotConfirm`
+          with, and the rule that grows it is :enabled as well. */}
+      <foreignObject
+        className="hero__moodSlot"
+        x={CHEST.cx - BUTTON.w / 2}
+        y={BUTTON.y}
+        width={BUTTON.w}
+        height={BUTTON.h}
+      >
+        <button
+          type="button"
+          className={`hero__moodConfirm${hotConfirm ? " is-hot" : ""}`}
+          disabled={!touched}
+          onClick={confirm}
+          onPointerEnter={() => setHotConfirm(true)}
+          onPointerLeave={() => setHotConfirm(false)}
+        >
+          Start diagnose
+        </button>
       </foreignObject>
     </g>
   );

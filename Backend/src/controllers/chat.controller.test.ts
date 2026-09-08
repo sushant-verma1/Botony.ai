@@ -24,18 +24,37 @@ vi.mock("../config/db.js", () => ({
   },
 }));
 
-const { mockGetClaudeResponse } = vi.hoisted(() => ({
-  mockGetClaudeResponse: vi.fn(),
+const { mockGenerateResponse } = vi.hoisted(() => ({
+  mockGenerateResponse: vi.fn(),
 }));
 
-vi.mock("../services/claude.js", async (importOriginal) => {
+vi.mock("../services/ai/index.js", async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import("../services/claude.js")>();
-  return { ...actual, getClaudeResponse: mockGetClaudeResponse };
+    await importOriginal<typeof import("../services/ai/index.js")>();
+  return { ...actual, generateResponse: mockGenerateResponse };
+});
+
+const {
+  mockValidateAttachmentsForMessage,
+  mockBindAttachmentsToMessage,
+} = vi.hoisted(() => ({
+  mockValidateAttachmentsForMessage: vi.fn(),
+  mockBindAttachmentsToMessage: vi.fn(),
+}));
+
+vi.mock("../services/attachment.service.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../services/attachment.service.js")>();
+  return {
+    ...actual,
+    validateAttachmentsForMessage: mockValidateAttachmentsForMessage,
+    bindAttachmentsToMessage: mockBindAttachmentsToMessage,
+  };
 });
 
 import { prisma } from "../config/db.js";
-import { ClaudeServiceError } from "../services/claude.js";
+import { AIServiceError } from "../services/ai/index.js";
+import { AttachmentError } from "../services/attachment.service.js";
 import {
   newChatController,
   listConversationsController,
@@ -69,7 +88,9 @@ beforeEach(() => {
   vi.mocked(prisma.$transaction).mockReset();
   vi.mocked(prisma.$transaction).mockImplementation(((cb: any) =>
     cb(prisma)) as never);
-  mockGetClaudeResponse.mockReset();
+  mockGenerateResponse.mockReset();
+  mockValidateAttachmentsForMessage.mockReset().mockResolvedValue([]);
+  mockBindAttachmentsToMessage.mockReset().mockResolvedValue(undefined);
 });
 
 describe("newChatController", () => {
@@ -302,11 +323,11 @@ describe("messageController", () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith({ message: "Not allowed" });
     expect(prisma.message.create).not.toHaveBeenCalled();
-    expect(mockGetClaudeResponse).not.toHaveBeenCalled();
+    expect(mockGenerateResponse).not.toHaveBeenCalled();
   });
 
   describe("emergency detection (patient safety)", () => {
-    it("short-circuits to the canned emergency response and never calls Claude", async () => {
+    it("short-circuits to the canned emergency response and never calls the AI service", async () => {
       vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
         userId: "user-1",
         status: "ongoing",
@@ -323,7 +344,7 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(mockGetClaudeResponse).not.toHaveBeenCalled();
+      expect(mockGenerateResponse).not.toHaveBeenCalled();
       expect(prisma.message.create).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
@@ -375,10 +396,10 @@ describe("messageController", () => {
           content: `message ${i}`,
         })) as never,
       );
-      mockGetClaudeResponse.mockResolvedValue("Here is some health info.");
+      mockGenerateResponse.mockResolvedValue({ text: "Here is some health info.", provider: "grok", model: "grok-4.6" });
     }
 
-    it("calls Claude and appends the medical disclaimer", async () => {
+    it("calls the AI service and appends the medical disclaimer", async () => {
       mockNormalFlow();
 
       const req = buildReq({
@@ -389,7 +410,7 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(mockGetClaudeResponse).toHaveBeenCalled();
+      expect(mockGenerateResponse).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "normal",
@@ -477,7 +498,7 @@ describe("messageController", () => {
   });
 
   describe("token limit", () => {
-    it("returns 400 without calling Claude when the token estimate is exceeded", async () => {
+    it("returns 400 without calling the AI service when the token estimate is exceeded", async () => {
       vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
         userId: "user-1",
         status: "ongoing",
@@ -501,7 +522,7 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(mockGetClaudeResponse).not.toHaveBeenCalled();
+      expect(mockGenerateResponse).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -512,8 +533,8 @@ describe("messageController", () => {
     });
   });
 
-  describe("Claude service failures", () => {
-    it("returns the ClaudeServiceError's status and safe message", async () => {
+  describe("AI service failures", () => {
+    it("returns the AIServiceError's status and safe message", async () => {
       vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
         userId: "user-1",
         status: "ongoing",
@@ -522,8 +543,8 @@ describe("messageController", () => {
         id: "user-msg-1",
       } as never);
       vi.mocked(prisma.message.findMany).mockResolvedValue([] as never);
-      mockGetClaudeResponse.mockRejectedValue(
-        new ClaudeServiceError(
+      mockGenerateResponse.mockRejectedValue(
+        new AIServiceError(
           "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
           503,
         ),
@@ -544,7 +565,7 @@ describe("messageController", () => {
       });
     });
 
-    it("returns a generic 500 for an unexpected non-Claude error", async () => {
+    it("returns a generic 500 for an unexpected non-AI error", async () => {
       vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
         userId: "user-1",
         status: "ongoing",
@@ -553,7 +574,7 @@ describe("messageController", () => {
         id: "user-msg-1",
       } as never);
       vi.mocked(prisma.message.findMany).mockResolvedValue([] as never);
-      mockGetClaudeResponse.mockRejectedValue(new Error("Unexpected"));
+      mockGenerateResponse.mockRejectedValue(new Error("Unexpected"));
 
       const req = buildReq({
         params: { chatid: "conv-1" },
@@ -568,6 +589,85 @@ describe("messageController", () => {
         expect.objectContaining({ message: "Failed to generate response" }),
       );
     });
+  });
+});
+
+describe("messageController attachments", () => {
+  function mockNormalFlow() {
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+      userId: "user-1",
+      status: "ongoing",
+    } as never);
+    vi.mocked(prisma.message.create)
+      .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+      .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { role: "user", content: "message 0" },
+    ] as never);
+    mockGenerateResponse.mockResolvedValue({
+      text: "Here is some health info.",
+      provider: "grok",
+      model: "grok-4.6",
+    });
+  }
+
+  it("rejects the message when attachment validation fails, without calling the AI", async () => {
+    mockValidateAttachmentsForMessage.mockRejectedValue(
+      new AttachmentError("One or more attachments were not found", 400),
+    );
+
+    const req = buildReq({
+      params: { chatid: "conv-1" },
+      body: { content: "see attached", attachmentIds: ["someone-elses-attachment"] },
+    } as never);
+    const res = createMockRes();
+
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+      userId: "user-1",
+      status: "ongoing",
+    } as never);
+
+    await messageController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      message: "One or more attachments were not found",
+    });
+    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it("binds validated attachments to the created message", async () => {
+    mockNormalFlow();
+    mockValidateAttachmentsForMessage.mockResolvedValue([
+      {
+        id: "att-1",
+        userId: "user-1",
+        kind: "IMAGE",
+        mimeType: "image/jpeg",
+        status: "READY",
+        publicId: "medical/images/user-1/uuid",
+      },
+    ]);
+
+    const req = buildReq({
+      params: { chatid: "conv-1" },
+      body: { content: "see attached", attachmentIds: ["att-1"] },
+    } as never);
+    const res = createMockRes();
+
+    await messageController(req, res);
+
+    expect(mockValidateAttachmentsForMessage).toHaveBeenCalledWith("user-1", [
+      "att-1",
+    ]);
+    expect(mockBindAttachmentsToMessage).toHaveBeenCalledWith(
+      ["att-1"],
+      "user-msg-1",
+    );
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "normal" }),
+    );
   });
 });
 
@@ -724,7 +824,7 @@ describe("Cross-user data isolation (IDOR protection)", () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith({ message: "Not allowed" });
     expect(prisma.message.create).not.toHaveBeenCalled();
-    expect(mockGetClaudeResponse).not.toHaveBeenCalled();
+    expect(mockGenerateResponse).not.toHaveBeenCalled();
   });
 
   it("blocks another user from reading someone else's conversation history", async () => {
@@ -764,5 +864,114 @@ describe("Cross-user data isolation (IDOR protection)", () => {
     expect(
       jsonArg.conversations.some((c) => c.id === CONVERSATION_ID),
     ).toBe(false);
+  });
+});
+
+describe("messageController attachment hardening", () => {
+  function mockNormalFlow() {
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+      userId: "user-1",
+      status: "ongoing",
+    } as never);
+    vi.mocked(prisma.message.create)
+      .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+      .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { role: "user", content: "message 0" },
+    ] as never);
+    mockGenerateResponse.mockResolvedValue({
+      text: "Here is some health info.",
+      provider: "grok",
+      model: "grok-4.6",
+    });
+  }
+
+  it("refuses a message referencing an attachment that is not READY", async () => {
+    // validateAttachmentsForMessage is what enforces READY; the controller
+    // must surface that refusal rather than proceeding to the provider.
+    mockValidateAttachmentsForMessage.mockRejectedValue(
+      new AttachmentError("One or more attachments are not ready yet", 400),
+    );
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+      userId: "user-1",
+      status: "ongoing",
+    } as never);
+
+    const req = buildReq({
+      params: { chatid: "conv-1" },
+      body: { content: "see attached", attachmentIds: ["pending-att"] },
+    } as never);
+    const res = createMockRes();
+
+    await messageController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it("fails the message if binding is refused at the last moment", async () => {
+    mockNormalFlow();
+    mockValidateAttachmentsForMessage.mockResolvedValue([
+      {
+        id: "att-1",
+        userId: "user-1",
+        kind: "IMAGE",
+        mimeType: "image/jpeg",
+        status: "READY",
+        publicId: "medical/images/user-1/uuid",
+      },
+    ]);
+    // Something changed between validation and binding — the binding query
+    // filters on READY again and refuses.
+    mockBindAttachmentsToMessage.mockRejectedValue(
+      new AttachmentError("One or more attachments are unavailable", 409),
+    );
+
+    const req = buildReq({
+      params: { chatid: "conv-1" },
+      body: { content: "see attached", attachmentIds: ["att-1"] },
+    } as never);
+    const res = createMockRes();
+
+    await messageController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(mockGenerateResponse).not.toHaveBeenCalled();
+  });
+
+  it("still delivers the emergency response when binding fails", async () => {
+    // Patient safety outranks attachments: a failed bind must not swallow
+    // the emergency guidance.
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+      userId: "user-1",
+      status: "ongoing",
+    } as never);
+    vi.mocked(prisma.$transaction).mockImplementation((async (fn: never) =>
+      (fn as unknown as (tx: unknown) => unknown)({
+        message: {
+          create: vi
+            .fn()
+            .mockResolvedValueOnce({ id: "user-msg-1" })
+            .mockResolvedValueOnce({ id: "assistant-msg-1" }),
+        },
+        conversation: { update: vi.fn() },
+      })) as never);
+    mockBindAttachmentsToMessage.mockRejectedValue(
+      new AttachmentError("One or more attachments are unavailable", 409),
+    );
+
+    const req = buildReq({
+      params: { chatid: "conv-1" },
+      body: { content: "I have chest pain", attachmentIds: ["att-1"] },
+    } as never);
+    const res = createMockRes();
+
+    await messageController(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "emergency" }),
+    );
+    expect(mockGenerateResponse).not.toHaveBeenCalled();
   });
 });

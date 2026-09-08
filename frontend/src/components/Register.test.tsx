@@ -71,7 +71,7 @@ function fillValidForm() {
   fireEvent.change(screen.getByLabelText(/^email$/i), {
     target: { value: "jane@example.com" },
   });
-  fireEvent.change(screen.getByLabelText(/password/i), {
+  fireEvent.change(screen.getByLabelText(/^password$/i), {
     target: { value: "password123" },
   });
   fireEvent.change(screen.getByLabelText(/age/i), {
@@ -99,7 +99,7 @@ describe("Register", () => {
     expect(screen.getByLabelText(/first name/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/last name/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/^email$/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/age/i)).toBeInTheDocument();
   });
 
@@ -161,7 +161,7 @@ describe("Register validation", () => {
   it("shows an error when the password is too short", () => {
     renderRegister();
     fillValidForm();
-    fireEvent.change(screen.getByLabelText(/password/i), {
+    fireEvent.change(screen.getByLabelText(/^password$/i), {
       target: { value: "short" },
     });
     submitForm();

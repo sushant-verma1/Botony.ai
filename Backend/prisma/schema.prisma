@@ -17,6 +17,17 @@ enum Role {
   assistant
 }
 
+enum AttachmentKind {
+  IMAGE
+  DOCUMENT
+}
+
+enum AttachmentStatus {
+  PENDING
+  READY
+  REJECTED
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -29,6 +40,7 @@ model User {
 
   conversations Conversation[]
   messages      Message[]
+  attachments   Attachment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -39,14 +51,17 @@ model Conversation {
   id     String @id @default(cuid())
   title  String?
   status String @default("ongoing")
-  
+
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   messages Message[]
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // Serves listConversationsController: where userId, orderBy updatedAt desc.
+  @@index([userId, updatedAt])
 }
 
 // Messages table
@@ -56,12 +71,60 @@ model Message {
   role              Role
   emergencyDetected Boolean @default(false)
   isPremiumKept     Boolean @default(false)
-  
+
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  
+
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
+  attachments Attachment[]
+
   createdAt DateTime @default(now())
+
+  // Serves getHistoryController's cursor pagination and messageController's
+  // previousMessages fetch: where conversationId, orderBy createdAt.
+  @@index([conversationId, createdAt])
+  // Unindexed FK: without this, deleting a User does a full table scan to
+  // cascade-delete their messages.
+  @@index([userId])
+}
+
+// File attachments (medical reports, symptom photos). Only metadata and a
+// Cloudinary public_id are stored here — never binary content, never the
+// user's original filename.
+model Attachment {
+  id           String           @id @default(cuid())
+  kind         AttachmentKind
+  status       AttachmentStatus @default(PENDING)
+  mimeType     String
+  bytes        Int              @default(0)
+  width        Int?
+  height       Int?
+  publicId     String           @unique
+  resourceType String
+  folder       String
+  // Which scanner cleared this file ("clamav", or "none" when uploads were
+  // explicitly allowed unscanned). Kept for audit, not for logic.
+  scanner      String?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  messageId String?
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  // Unindexed FK: without this, deleting a User does a full table scan to
+  // cascade-delete their attachments. createdAt is the trailing column so the
+  // same index also orders a user's attachments without a sort.
+  @@index([userId, createdAt])
+  // Loading a message's attachments, and the FK cascade when a Message is
+  // deleted.
+  @@index([messageId])
+  // Serves the scheduled cleanup sweep: where status = 'PENDING' and
+  // createdAt < cutoff. Without it the sweep scans every attachment ever
+  // uploaded to find the handful that were abandoned.
+  @@index([status, createdAt])
 }

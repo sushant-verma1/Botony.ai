@@ -4,13 +4,28 @@ import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
 import axios from "axios";
 import Spinner from "./Spinner";
+import { Button } from "./ui/button";
+import { Field, FieldError, FieldGroup, FieldLabel } from "./ui/field";
+import { Input } from "./ui/input";
 
 interface FormErrors {
   email?: string;
   password?: string;
 }
 
-export default function Login() {
+/** `embedded` drops the full-page framing and returns the card alone, for
+ *  when the form is a part of a composition rather than the page — the hero
+ *  sequence hands off to it in place. `onSwitch` replaces the "Register" link
+ *  with a callback, for when the other form is going to take this one's place
+ *  in situ rather than at another route. Everything else is identical: same
+ *  validation, same submit, same redirect. */
+export default function Login({
+  embedded = false,
+  onSwitch,
+}: {
+  embedded?: boolean;
+  onSwitch?: () => void;
+}) {
   const [errors, setErrors] = useState<FormErrors>({});
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,79 +72,87 @@ export default function Login() {
     }
   };
 
+  /* shadcn/ui's Field is the form: it owns the label/control/error grouping
+     and the invalid state, so the only markup left here is which control goes
+     in which field. Nothing about the submit, the validation or the redirect
+     changed with it. */
   const card = (
-    <div className="bg-white p-8 rounded-xl shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-bold mb-6 text-gray-800">Sign In</h1>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label
-              htmlFor="email"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+    <form onSubmit={handleSubmit} className="w-full">
+      <FieldGroup className="gap-4">
+        <Field data-invalid={!!errors.email || undefined}>
+          <FieldLabel htmlFor="email">Email</FieldLabel>
+          <Input
+            id="email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            aria-invalid={!!errors.email || undefined}
+          />
+          <FieldError>{errors.email}</FieldError>
+        </Field>
+
+        <Field data-invalid={!!errors.password || undefined}>
+          <FieldLabel htmlFor="password">Password</FieldLabel>
+          {/* The reveal sits inside the field rather than beside it, so the
+              control is still one row whatever the field is laid out at. */}
+          <div className="relative">
+            <Input
+              id="password"
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              aria-invalid={!!errors.password || undefined}
+              className="pr-14"
             />
-            {errors.email && (
-              <p className="text-red-500 text-sm mt-1">{errors.email}</p>
-            )}
-          </div>
-          <div>
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-gray-700 mb-1"
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={() => setShowPassword((prev) => !prev)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              className="absolute inset-y-0 right-1 my-auto text-muted-foreground"
             >
-              Password
-            </label>
-            <div className="relative">
-              <input
-                id="password"
-                type={showPassword ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 pr-16 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((prev) => !prev)}
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                className="absolute inset-y-0 right-0 px-3 text-sm text-gray-500 hover:text-gray-700"
-              >
-                {showPassword ? "Hide" : "Show"}
-              </button>
-            </div>
-            {errors.password && (
-              <p className="text-red-500 text-sm mt-1">{errors.password}</p>
-            )}
+              {showPassword ? "Hide" : "Show"}
+            </Button>
           </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {loading && <Spinner />}
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-        </form>
-        <p className="mt-4 text-sm text-center text-gray-600">
+          <FieldError>{errors.password}</FieldError>
+        </Field>
+
+        <Button type="submit" disabled={loading} className="w-full">
+          {loading && <Spinner />}
+          {loading ? "Signing in..." : "Sign In"}
+        </Button>
+
+        <p className="text-center text-sm text-muted-foreground">
           No account?{" "}
-          <Link to="/register" className="text-blue-600 hover:underline">
-            Register
-          </Link>
+          {onSwitch ? (
+            <button
+              type="button"
+              onClick={onSwitch}
+              className="underline underline-offset-4"
+            >
+              Register
+            </button>
+          ) : (
+            <Link to="/register" className="underline underline-offset-4">
+              Register
+            </Link>
+          )}
         </p>
-      </div>
+      </FieldGroup>
+    </form>
   );
+
+  if (embedded) return card;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      {card}
+      <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-md">
+        <h1 className="mb-6 text-2xl font-bold">Sign In</h1>
+        {card}
+      </div>
     </div>
   );
 }
