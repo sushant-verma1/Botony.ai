@@ -134,6 +134,16 @@ export const EYE = {
   BAR_H: 6,
 } as const;
 
+/** How flat the eyes go when they are held shut (see AuthScene's password
+ *  field): exactly the height of the connector running between them, so the
+ *  shut pair and the bar read as one continuous line rather than two slivers
+ *  floating either side of it. Derived from the geometry above rather than
+ *  written down, so it cannot drift from the bar it has to match.
+ *
+ *  Deliberately not IDLE.blinkScale: a blink is a moment and can go almost
+ *  flat, but this is a held pose and wants a shape. */
+export const shutScale = EYE.BAR_H / (EYE.R * 2);
+
 /** Where the reference file draws the left eye, before the translation above.
  *  The only place the asset's untranslated coordinates appear. */
 const REF_EYE_L = { cx: 250, cy: 171 } as const;
@@ -274,4 +284,19 @@ export const FORM_SHIFT = {
    *  the character stepping back rather than the page resizing. */
   duration: 460,
   bounce: 0.28,
+} as const;
+
+/** AUTH_ENTER — the character arriving on /login or /register from anywhere
+ *  other than the intro's own Confirm press (a typed URL, a nav link, the
+ *  PrivateRoute redirect). It springs up from below the viewport to the same
+ *  ZOOM framing the intro leaves it in, so the two arrivals end at the
+ *  identical resting position — only how they got there differs. */
+export const AUTH_ENTER = {
+  /** The spring's *perceived* duration — how long the character reads as
+   *  taking to arrive, which is what the form waits for. Anime runs the tween
+   *  for the spring's settling time instead, half again as long; that tail is
+   *  overshoot too small to see, so nothing should be timed off it (see
+   *  AuthScene, which hangs the form off the spring's own onComplete). */
+  duration: 500,
+  bounce: 0.22,
 } as const;

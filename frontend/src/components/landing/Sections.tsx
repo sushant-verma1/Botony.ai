@@ -2,7 +2,7 @@
  * The written half of the landing page.
  *
  * Every claim below is one the backend actually implements — emergency
- * detection running ahead of the model, a disclaimer appended to each reply,
+ * detection running ahead of the model, limits stated where they apply,
  * conversations scoped to an account. Nothing here asserts accuracy, clinical
  * validation, or an outcome, because the project provides no evidence for any
  * of those and a medical product is the worst place to imply them.
@@ -79,8 +79,8 @@ const CAPABILITIES = [
     body: "The screen runs before the model, not after it. It cannot be skipped by phrasing, and it cannot be turned off.",
   },
   {
-    title: "A disclaimer on every answer",
-    body: "Not a footnote you have to find. It is appended to each response, because the limits of the answer are part of the answer.",
+    title: "Limits stated where they matter",
+    body: "Not a warning block bolted onto every reply. When an answer touches your symptoms, your medication, or a real result, it says so plainly — and a standing note sits under the composer either way.",
   },
   {
     title: "Conversations that keep their thread",

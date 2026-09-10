@@ -396,10 +396,10 @@ describe("messageController", () => {
           content: `message ${i}`,
         })) as never,
       );
-      mockGenerateResponse.mockResolvedValue({ text: "Here is some health info.", provider: "grok", model: "grok-4.6" });
+      mockGenerateResponse.mockResolvedValue({ text: "Here is some health info.", provider: "groq", model: "meta-llama/llama-4-scout-17b-16e-instruct" });
     }
 
-    it("calls the AI service and appends the medical disclaimer", async () => {
+    it("returns the AI answer unchanged, with no blanket disclaimer", async () => {
       mockNormalFlow();
 
       const req = buildReq({
@@ -420,7 +420,7 @@ describe("messageController", () => {
       const jsonArg = vi.mocked(res.json).mock.calls[0][0] as {
         response: string;
       };
-      expect(jsonArg.response).toMatch(/IMPORTANT DISCLAIMER/i);
+      expect(jsonArg.response).toBe("Here is some health info.");
     });
 
     it("flips conversation status from 'emergency' back to 'ongoing'", async () => {
@@ -494,6 +494,79 @@ describe("messageController", () => {
       const updateArg = vi.mocked(prisma.conversation.update).mock
         .calls[0][0] as { data: Record<string, unknown> };
       expect(updateArg.data.title).toBeUndefined();
+    });
+  });
+
+  describe("model reasoning is never exposed (patient safety)", () => {
+    const REASONING = "Chain of thought: weigh meningitis vs tension headache.";
+    const ANSWER = "Here is some health info.";
+
+    function mockFlowReturning(aiResult: Record<string, unknown>) {
+      vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+        userId: "user-1",
+        status: "ongoing",
+      } as never);
+      vi.mocked(prisma.message.create)
+        .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+        .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+      vi.mocked(prisma.message.findMany).mockResolvedValue([
+        { role: "user", content: "message 0" },
+      ] as never);
+      mockGenerateResponse.mockResolvedValue(aiResult);
+    }
+
+    it("does not persist reasoning in Message.content or return it", async () => {
+      mockFlowReturning({
+        text: ANSWER,
+        reasoning: REASONING,
+        provider: "groq",
+        model: "qwen/qwen3.6-27b",
+      });
+
+      const req = buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "I have a mild headache" },
+      } as never);
+      const res = createMockRes();
+
+      await messageController(req, res);
+
+      // Only aiResult.text reaches the assistant row.
+      const assistantWrite = vi.mocked(prisma.message.create).mock.calls[1][0]
+        .data as { content: string };
+      expect(assistantWrite.content).toBe(ANSWER);
+      expect(assistantWrite.content).not.toContain(REASONING);
+      expect(JSON.stringify(assistantWrite)).not.toContain("Chain of thought");
+
+      // ...and only aiResult.text reaches the client.
+      const body = vi.mocked(res.json).mock.calls[0][0] as Record<string, unknown>;
+      expect(body.response).toBe(ANSWER);
+      expect(JSON.stringify(body)).not.toContain("Chain of thought");
+      expect(JSON.stringify(body)).not.toContain("reasoning");
+    });
+
+    it("keeps reasoning out of the logs", async () => {
+      const logger = (await import("../services/logger.js")).default;
+      mockFlowReturning({
+        text: ANSWER,
+        reasoning: REASONING,
+        provider: "groq",
+        model: "qwen/qwen3.6-27b",
+      });
+
+      const req = buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "I have a mild headache" },
+      } as never);
+
+      await messageController(req, createMockRes());
+
+      const logged = JSON.stringify([
+        ...vi.mocked(logger.info).mock.calls,
+        ...vi.mocked(logger.warn).mock.calls,
+        ...vi.mocked(logger.error).mock.calls,
+      ]);
+      expect(logged).not.toContain("Chain of thought");
     });
   });
 
@@ -606,8 +679,8 @@ describe("messageController attachments", () => {
     ] as never);
     mockGenerateResponse.mockResolvedValue({
       text: "Here is some health info.",
-      provider: "grok",
-      model: "grok-4.6",
+      provider: "groq",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
     });
   }
 
@@ -881,8 +954,8 @@ describe("messageController attachment hardening", () => {
     ] as never);
     mockGenerateResponse.mockResolvedValue({
       text: "Here is some health info.",
-      provider: "grok",
-      model: "grok-4.6",
+      provider: "groq",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
     });
   }
 

@@ -24,21 +24,28 @@ export interface AIUsage {
 }
 
 export interface AIResponse {
+  /** The only field that may reach the patient or Message.content. */
   text: string;
-  provider: "grok" | "gemini";
+  /**
+   * Model chain of thought, kept separate so it cannot reach `text`. Never
+   * returned to the client, never persisted, never logged as content — the
+   * providers log its length only.
+   */
+  reasoning?: string;
+  provider: "gemini" | "groq";
   model: string;
   usage?: AIUsage;
   finishReason?: string;
 }
 
 export class AIProviderError extends Error {
-  provider: "grok" | "gemini";
+  provider: "gemini" | "groq";
   status?: number;
   retryable: boolean;
 
   constructor(
     message: string,
-    provider: "grok" | "gemini",
+    provider: "gemini" | "groq",
     retryable: boolean,
     status?: number,
   ) {

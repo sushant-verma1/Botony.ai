@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
-import { animate, createTimeline, spring, utils } from "animejs";
+import { createTimeline, spring, utils } from "animejs";
+import { createBlink } from "./blink";
 import {
   EYE,
   IDLE,
@@ -245,15 +246,7 @@ export function useIntroTimeline(
     // whole hero. It compresses each eye vertically and lets it come back up
     // slightly slower; the width is never written, so the eye keeps exactly the
     // shape the SVG draws, and the connector between them is untouched.
-    const blink = animate([eyeL, eyeR], {
-      scaleY: [
-        { to: 1, duration: IDLE.blinkHold },
-        { to: IDLE.blinkScale, duration: IDLE.blinkClose, ease: "inQuad" },
-        { to: 1, duration: IDLE.blinkOpen, ease: "outQuad" },
-      ],
-      loop: true,
-      autoplay: false,
-    });
+    const blink = createBlink(eyeL, eyeR);
 
     // One glance: dart to a mark, hold the look, move on. The last leg has no
     // dwell — the eyes simply come back to centre and stay there.

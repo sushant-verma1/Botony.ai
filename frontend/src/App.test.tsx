@@ -61,24 +61,39 @@ describe("App routing", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the login form (not a redirect) for an unauthenticated visitor at /", () => {
+  it("shows the landing hero (not a redirect) for an unauthenticated visitor at /", () => {
     mockUseAuth.mockReturnValue({ isLoggedIn: false });
 
     renderAt("/");
 
-    expect(
-      screen.getByRole("heading", { name: /sign in/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/tell it where it hurts/i)).toBeInTheDocument();
   });
 
-  it("still serves the plain login card at /login", () => {
+  it("serves the login form, on the character, at /login", async () => {
     mockUseAuth.mockReturnValue({ isLoggedIn: false });
 
     renderAt("/login");
 
-    expect(
-      screen.getByRole("heading", { name: /sign in/i }),
-    ).toBeInTheDocument();
+    // The character springs up from below the fold before the form mounts
+    // (see AuthScene) — jsdom has no layout, so the spring still runs, just
+    // over nothing worth measuring.
+    await waitFor(
+      () => expect(screen.getByLabelText(/email/i)).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
+    expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
+  });
+
+  it("serves the register form, on the character, at /register", async () => {
+    mockUseAuth.mockReturnValue({ isLoggedIn: false });
+
+    renderAt("/register");
+
+    await waitFor(
+      () => expect(screen.getByLabelText(/first name/i)).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
+    expect(screen.getByLabelText(/last name/i)).toBeInTheDocument();
   });
 
   it("renders the not-found page for an unknown route", () => {

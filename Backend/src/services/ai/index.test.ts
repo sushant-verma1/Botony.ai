@@ -4,13 +4,13 @@ vi.mock("../logger.js", () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockGenerateWithGrok, mockGenerateWithGemini } = vi.hoisted(() => ({
-  mockGenerateWithGrok: vi.fn(),
+const { mockGenerateWithGroq, mockGenerateWithGemini } = vi.hoisted(() => ({
+  mockGenerateWithGroq: vi.fn(),
   mockGenerateWithGemini: vi.fn(),
 }));
 
-vi.mock("./grok.provider.js", () => ({
-  generateWithGrok: mockGenerateWithGrok,
+vi.mock("./groq.provider.js", () => ({
+  generateWithGroq: mockGenerateWithGroq,
 }));
 
 vi.mock("./gemini.provider.js", () => ({
@@ -23,51 +23,15 @@ import { AIProviderError } from "./types.js";
 const messages = [{ role: "user" as const, content: "I have a headache" }];
 
 beforeEach(() => {
-  mockGenerateWithGrok.mockReset();
+  mockGenerateWithGroq.mockReset();
   mockGenerateWithGemini.mockReset();
   vi.useRealTimers();
 });
 
 describe("generateResponse failover", () => {
-  it("returns the Grok response on success without calling Gemini", async () => {
-    mockGenerateWithGrok.mockResolvedValue({
-      text: "grok says hi",
-      provider: "grok",
-      model: "grok-4.6",
-    });
-
-    const result = await generateResponse(messages);
-
-    expect(result.provider).toBe("grok");
-    expect(result.text).toBe("grok says hi");
-    expect(mockGenerateWithGrok).toHaveBeenCalledTimes(1);
-    expect(mockGenerateWithGemini).not.toHaveBeenCalled();
-  });
-
-  it("retries Grok once on a transient failure, then returns Grok's retried success", async () => {
-    mockGenerateWithGrok
-      .mockRejectedValueOnce(
-        new AIProviderError("upstream 503", "grok", true, 503),
-      )
-      .mockResolvedValueOnce({
-        text: "grok recovered",
-        provider: "grok",
-        model: "grok-4.6",
-      });
-
-    const result = await generateResponse(messages);
-
-    expect(result.provider).toBe("grok");
-    expect(mockGenerateWithGrok).toHaveBeenCalledTimes(2);
-    expect(mockGenerateWithGemini).not.toHaveBeenCalled();
-  });
-
-  it("fails over to Gemini once both Grok attempts are exhausted", async () => {
-    mockGenerateWithGrok.mockRejectedValue(
-      new AIProviderError("rate limited", "grok", true, 429),
-    );
+  it("returns the Gemini response on success without calling Groq", async () => {
     mockGenerateWithGemini.mockResolvedValue({
-      text: "gemini covers it",
+      text: "gemini says hi",
       provider: "gemini",
       model: "gemini-3.6-flash",
     });
@@ -75,47 +39,83 @@ describe("generateResponse failover", () => {
     const result = await generateResponse(messages);
 
     expect(result.provider).toBe("gemini");
-    expect(mockGenerateWithGrok).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("gemini says hi");
     expect(mockGenerateWithGemini).toHaveBeenCalledTimes(1);
+    expect(mockGenerateWithGroq).not.toHaveBeenCalled();
   });
 
-  it("does not fail over to Gemini on a non-retryable client error", async () => {
-    mockGenerateWithGrok.mockRejectedValue(
-      new AIProviderError("bad request", "grok", false, 400),
+  it("retries Gemini once on a transient failure, then returns Gemini's retried success", async () => {
+    mockGenerateWithGemini
+      .mockRejectedValueOnce(
+        new AIProviderError("upstream 503", "gemini", true, 503),
+      )
+      .mockResolvedValueOnce({
+        text: "gemini recovered",
+        provider: "gemini",
+        model: "gemini-3.6-flash",
+      });
+
+    const result = await generateResponse(messages);
+
+    expect(result.provider).toBe("gemini");
+    expect(mockGenerateWithGemini).toHaveBeenCalledTimes(2);
+    expect(mockGenerateWithGroq).not.toHaveBeenCalled();
+  });
+
+  it("fails over to Groq once both Gemini attempts are exhausted", async () => {
+    mockGenerateWithGemini.mockRejectedValue(
+      new AIProviderError("rate limited", "gemini", true, 429),
+    );
+    mockGenerateWithGroq.mockResolvedValue({
+      text: "groq covers it",
+      provider: "groq",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    });
+
+    const result = await generateResponse(messages);
+
+    expect(result.provider).toBe("groq");
+    expect(mockGenerateWithGemini).toHaveBeenCalledTimes(2);
+    expect(mockGenerateWithGroq).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fail over to Groq on a non-retryable client error", async () => {
+    mockGenerateWithGemini.mockRejectedValue(
+      new AIProviderError("bad request", "gemini", false, 400),
     );
 
     await expect(generateResponse(messages)).rejects.toThrow(AIServiceError);
 
-    expect(mockGenerateWithGrok).toHaveBeenCalledTimes(1);
-    expect(mockGenerateWithGemini).not.toHaveBeenCalled();
+    expect(mockGenerateWithGemini).toHaveBeenCalledTimes(1);
+    expect(mockGenerateWithGroq).not.toHaveBeenCalled();
   });
 
   it("throws a safe AIServiceError when both providers fail", async () => {
-    mockGenerateWithGrok.mockRejectedValue(
-      new AIProviderError("timeout", "grok", true),
-    );
     mockGenerateWithGemini.mockRejectedValue(
-      new AIProviderError("gemini down", "gemini", false, 500),
+      new AIProviderError("timeout", "gemini", true),
+    );
+    mockGenerateWithGroq.mockRejectedValue(
+      new AIProviderError("groq down", "groq", false, 500),
     );
 
     await expect(generateResponse(messages)).rejects.toThrow(AIServiceError);
 
-    expect(mockGenerateWithGrok).toHaveBeenCalledTimes(2);
-    expect(mockGenerateWithGemini).toHaveBeenCalledTimes(1);
+    expect(mockGenerateWithGemini).toHaveBeenCalledTimes(2);
+    expect(mockGenerateWithGroq).toHaveBeenCalledTimes(1);
   });
 
   it("never makes more than 3 upstream calls total", async () => {
-    mockGenerateWithGrok.mockRejectedValue(
-      new AIProviderError("timeout", "grok", true),
-    );
     mockGenerateWithGemini.mockRejectedValue(
-      new AIProviderError("gemini down", "gemini", true, 500),
+      new AIProviderError("timeout", "gemini", true),
+    );
+    mockGenerateWithGroq.mockRejectedValue(
+      new AIProviderError("groq down", "groq", true, 500),
     );
 
     await expect(generateResponse(messages)).rejects.toThrow(AIServiceError);
 
     const totalCalls =
-      mockGenerateWithGrok.mock.calls.length +
+      mockGenerateWithGroq.mock.calls.length +
       mockGenerateWithGemini.mock.calls.length;
     expect(totalCalls).toBeLessThanOrEqual(3);
   });

@@ -7,13 +7,20 @@ import Chat from "./components/Chat";
 import PrivateRoute from "./components/PrivateRouter";
 import NotFound from "./pages/NotFound";
 import Home from "./pages/Home";
+import AuthScene from "./components/intro/AuthScene";
 
 export function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<Home />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
+      {/* A pathless layout route: AuthScene (the character, wearing whichever
+          form is routed to) stays mounted across /login <-> /register, which
+          is what lets the character step back for the taller register form
+          instead of the page remounting it. */}
+      <Route element={<AuthScene />}>
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+      </Route>
       <Route
         path="/chat"
         element={

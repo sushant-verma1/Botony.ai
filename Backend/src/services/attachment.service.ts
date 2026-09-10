@@ -5,6 +5,7 @@ import { cloudinary } from "../config/cloudinary.js";
 import { cloudinaryApiSecret } from "../config/config.js";
 import { prisma } from "../config/db.js";
 import logger from "./logger.js";
+import { describeError } from "../utils/error.util.js";
 import { scanAttachment } from "./malware.service.js";
 import type { Attachment, AttachmentKind } from "@prisma/client";
 import {
@@ -92,7 +93,7 @@ export async function sweepAbandonedAttachments(): Promise<CleanupSummary> {
       summary.pendingFailed += 1;
       logger.warn("Failed to destroy abandoned pending attachment", {
         attachmentId: attachment.id,
-        message: error instanceof Error ? error.message : "unknown",
+        ...describeError(error),
       });
       continue;
     }
@@ -253,7 +254,7 @@ async function rejectAttachment(
   } catch (error) {
     logger.warn("Failed to destroy rejected attachment", {
       attachmentId: attachment.id,
-      message: error instanceof Error ? error.message : "unknown",
+      ...describeError(error),
     });
   }
   await prisma.attachment.update({
@@ -268,44 +269,147 @@ async function rejectAttachment(
 }
 
 /**
+ * Segment/chunk markers that carry the metadata sanitization is meant to
+ * remove: EXIF (incl. GPS), XMP, IPTC and free-text comments. Their presence
+ * in a supposedly sanitized image means the strip did not happen.
+ */
+export function findImageMetadataMarker(
+  buffer: Buffer,
+  format: string,
+): string | null {
+  if (format === "png") {
+    return (
+      ["eXIf", "tEXt", "iTXt", "zTXt"].find((chunk) =>
+        buffer.includes(chunk, 0, "latin1"),
+      ) ?? null
+    );
+  }
+  if (format === "webp") {
+    return (
+      ["EXIF", "XMP "].find((chunk) => buffer.includes(chunk, 0, "latin1")) ??
+      null
+    );
+  }
+
+  // JPEG: walk the segment headers rather than substring-matching, so a
+  // marker string appearing inside compressed scan data can't cause a false
+  // rejection of a legitimately sanitized image.
+  let offset = 2; // past SOI
+  while (offset + 4 <= buffer.length && buffer[offset] === 0xff) {
+    const marker = buffer[offset + 1];
+    if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) {
+      offset += 2;
+      continue;
+    }
+    if (marker === 0xda) break; // start of scan — no metadata past here
+    if (marker === 0xe1) return "APP1 (EXIF/XMP)";
+    if (marker === 0xed) return "APP13 (IPTC)";
+    if (marker === 0xfe) return "COM";
+    offset += 2 + buffer.readUInt16BE(offset + 2);
+  }
+  return null;
+}
+
+/**
  * Strips metadata (EXIF, GPS coordinates, IPTC, XMP) from a stored image and
  * normalizes its dimensions, by replacing the original with a Cloudinary
- * derivative of itself. Cloudinary drops metadata when generating a
- * derivative, so requesting the transformed URL and uploading it back over
- * the same public_id removes the metadata at rest — and because Cloudinary
- * fetches that URL itself, the image bytes never pass through this backend.
+ * derivative of itself.
+ *
+ * Cloudinary generates that derivative server-side via an eager transformation
+ * on `uploader.explicit`, and this backend then reads the materialized
+ * derivative and writes its bytes back over the same public_id. It must not go
+ * back to asking Cloudinary to upload from its own delivery URL: for a
+ * freshly uploaded asset the derivative does not exist yet, and Cloudinary
+ * answers its own self-fetch with HTTP 420 instead of generating it — which
+ * made sanitization fail deterministically on every new upload.
  *
  * A GPS-tagged photo of a symptom is exactly the kind of thing that must not
- * survive in storage, so this runs before the attachment is ever READY.
+ * survive in storage, so this runs before the attachment is ever READY, and
+ * the derivative is validated (format, dimensions, metadata markers) before it
+ * is allowed to become the stored asset.
  */
 async function sanitizeStoredImage(
   attachment: Attachment,
   format: string,
 ): Promise<{ bytes: number; width: number; height: number }> {
-  const sanitizedSourceUrl = cloudinary.url(attachment.publicId, {
-    resource_type: "image",
+  const explicit = (await cloudinary.uploader.explicit(attachment.publicId, {
     type: "authenticated",
-    sign_url: true,
-    secure: true,
-    format,
-    transformation: [
+    resource_type: "image",
+    eager: [
       {
         width: MAX_STORED_IMAGE_DIMENSION,
         height: MAX_STORED_IMAGE_DIMENSION,
         crop: "limit",
         quality: "auto",
+        format,
       },
     ],
-  });
-
-  const result = (await cloudinary.uploader.upload(sanitizedSourceUrl, {
-    public_id: attachment.publicId,
-    resource_type: "image",
-    type: "authenticated",
-    format,
-    overwrite: true,
+    eager_async: false,
     invalidate: true,
-  })) as { bytes?: number; width?: number; height?: number; format?: string };
+  })) as {
+    eager?: {
+      secure_url?: string;
+      bytes?: number;
+      width?: number;
+      height?: number;
+      format?: string;
+    }[];
+  };
+
+  const derivative = explicit.eager?.[0];
+  if (!derivative?.secure_url || !derivative.width || !derivative.height) {
+    throw new Error("Cloudinary did not generate a sanitized derivative");
+  }
+  if (derivative.format && derivative.format !== format) {
+    throw new Error(
+      `Sanitized derivative changed format: expected ${format}, got ${derivative.format}`,
+    );
+  }
+  if (
+    derivative.width > MAX_STORED_IMAGE_DIMENSION ||
+    derivative.height > MAX_STORED_IMAGE_DIMENSION
+  ) {
+    throw new Error(
+      `Sanitized derivative exceeds the stored-dimension cap: ${derivative.width}x${derivative.height}`,
+    );
+  }
+
+  // Read back the derivative this backend just had generated — a server-side
+  // fetch of an already-materialized asset, not Cloudinary fetching itself.
+  const sanitizedBytes = await fetchRange(derivative.secure_url, "bytes=0-");
+
+  if (
+    sanitizedBytes.length === 0 ||
+    sanitizedBytes.length > maxBytesForKind(attachment.kind)
+  ) {
+    throw new Error(
+      `Sanitized derivative has an unusable size: ${sanitizedBytes.length} bytes`,
+    );
+  }
+  const sniffed = await fileTypeFromBuffer(sanitizedBytes);
+  if (!sniffed || sniffed.ext !== format) {
+    throw new Error(
+      `Sanitized derivative is not a valid ${format} image (sniffed ${sniffed?.ext ?? "nothing"})`,
+    );
+  }
+  const marker = findImageMetadataMarker(sanitizedBytes, format);
+  if (marker) {
+    throw new Error(`Sanitized derivative still carries metadata: ${marker}`);
+  }
+
+  // Write the verified bytes back over the original, from memory — passing a
+  // Cloudinary URL here is what caused the 420.
+  const result = (await cloudinary.uploader.upload(
+    `data:${attachment.mimeType};base64,${sanitizedBytes.toString("base64")}`,
+    {
+      public_id: attachment.publicId,
+      resource_type: "image",
+      type: "authenticated",
+      format,
+      overwrite: true,
+      invalidate: true,
+    },
+  )) as { bytes?: number; width?: number; height?: number; format?: string };
 
   if (!result.width || !result.height || !result.bytes) {
     throw new Error("Cloudinary did not return a usable sanitized image");
@@ -355,7 +459,7 @@ export async function confirmAttachment(
   } catch (error) {
     logger.warn("Attachment not found in Cloudinary at confirm time", {
       attachmentId,
-      message: error instanceof Error ? error.message : "unknown",
+      ...describeError(error),
     });
     await prisma.attachment.update({
       where: { id: attachmentId },
@@ -449,7 +553,10 @@ export async function confirmAttachment(
     } catch (error) {
       logger.error("Image sanitization failed", {
         attachmentId,
-        message: error instanceof Error ? error.message : "unknown",
+        publicId: attachment.publicId,
+        resourceType: "image",
+        format: resource.format,
+        ...describeError(error),
       });
       return rejectAttachment(attachment, "image sanitization failed");
     }
@@ -537,7 +644,7 @@ export async function deleteAttachment(
   } catch (error) {
     logger.warn("Failed to destroy attachment in Cloudinary", {
       attachmentId,
-      message: error instanceof Error ? error.message : "unknown",
+      ...describeError(error),
     });
   }
 
@@ -620,7 +727,7 @@ export function isDocumentAttachment(attachment: Attachment): boolean {
 
 /**
  * A short-lived signed URL suitable for handing to an AI provider. Unlike
- * getAttachmentDeliveryUrl, this forces a JPEG derivative (Grok only accepts
+ * getAttachmentDeliveryUrl, this forces a JPEG derivative (the AI providers only accept
  * JPEG/PNG) and is never returned to the browser or persisted — it exists
  * only for the duration of the outbound provider call.
  */
@@ -638,7 +745,7 @@ export function getAiImageUrl(attachment: Attachment): string {
 }
 
 /**
- * Grok cannot consume PDFs directly, so this is the one place attachment
+ * Neither AI provider consumes PDFs directly, so this is the one place attachment
  * bytes deliberately flow through the backend: a short-lived signed URL is
  * fetched in full and the text extracted, capped, and passed as context
  * instead of the binary. Failure is surfaced, not swallowed.
@@ -671,7 +778,7 @@ export async function extractPdfText(attachment: Attachment): Promise<string> {
   } catch (error) {
     logger.error("PDF text extraction failed", {
       attachmentId: attachment.id,
-      message: error instanceof Error ? error.message : "unknown",
+      ...describeError(error),
     });
     throw new AttachmentError("Could not read attached PDF", 422);
   }

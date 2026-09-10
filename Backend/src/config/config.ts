@@ -22,8 +22,13 @@ const connectionString = getEnv("DATABASE_URL");
 const accessTokenSecret = getEnv("ACCESS_TOKEN_SECRET");
 const refreshTokenSecret = getEnv("REFRESH_TOKEN_SECRET");
 
-const xaiApiKey = getEnv("XAI_API_KEY");
-const xaiModel = getOptionalEnv("XAI_MODEL", "grok-4.6");
+// Groq is the fallback provider. The model must be vision-capable: image
+// attachments follow the same path here as they do on Gemini.
+const groqApiKey = getEnv("GROQ_API_KEY");
+const groqModel = getOptionalEnv(
+  "GROQ_MODEL",
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+);
 
 const geminiApiKey = getEnv("GEMINI_API_KEY");
 const geminiModel = getOptionalEnv("GEMINI_MODEL", "gemini-3.6-flash");
@@ -63,8 +68,8 @@ export {
   connectionString,
   accessTokenSecret,
   refreshTokenSecret,
-  xaiApiKey,
-  xaiModel,
+  groqApiKey,
+  groqModel,
   geminiApiKey,
   geminiModel,
   cloudinaryCloudName,

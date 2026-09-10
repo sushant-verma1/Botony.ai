@@ -22,8 +22,11 @@ export const protect = async (
     const decoded = verifyAccessToken(token);
 
     if (!decoded) {
+      // Top-level `message` mirrors the other 401s here so clients reading
+      // `data.message` get real text instead of undefined.
       return res.status(401).json({
         success: false,
+        message: "Your session has expired. Please log in again.",
         error: { message: "Invalid or expired token" },
       });
     }
@@ -33,6 +36,7 @@ export const protect = async (
     console.error("Auth middleware error:", error);
     return res.status(401).json({
       success: false,
+      message: "Authentication failed",
       error: { message: "Authentication failed" },
     });
   }

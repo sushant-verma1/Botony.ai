@@ -54,6 +54,7 @@ describe("protect middleware", () => {
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({
       success: false,
+      message: "Your session has expired. Please log in again.",
       error: { message: "Invalid or expired token" },
     });
     expect(next).not.toHaveBeenCalled();

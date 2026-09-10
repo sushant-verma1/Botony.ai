@@ -90,7 +90,7 @@ describe("Register", () => {
   it("renders the registration form", () => {
     renderRegister();
     expect(
-      screen.getByRole("heading", { name: /create account/i }),
+      screen.getByRole("button", { name: /create account/i }),
     ).toBeInTheDocument();
   });
 
@@ -123,8 +123,40 @@ describe("Register", () => {
     ).toHaveAttribute("href", "/PRIVACY.MD");
   });
 
-  it("disables the submit button until both checkboxes are checked", () => {
+  it("disables the submit button until every field and both checkboxes are done", async () => {
+    const user = userEvent.setup();
     renderRegister();
+    const button = screen.getByRole("button", { name: /create account/i });
+    expect(button).toBeDisabled();
+
+    // Every field filled is not enough on its own — the consents still gate it.
+    fillValidForm();
+    expect(button).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("checkbox", { name: /terms of service/i }),
+    );
+    expect(button).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("checkbox", { name: /not a substitute/i }),
+    );
+    expect(button).not.toBeDisabled();
+  });
+
+  it("keeps it disabled when a field is missing but both consents are given", async () => {
+    const user = userEvent.setup();
+    renderRegister();
+    fillValidForm();
+    fireEvent.change(screen.getByLabelText(/age/i), { target: { value: "" } });
+
+    await user.click(
+      screen.getByRole("checkbox", { name: /terms of service/i }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /not a substitute/i }),
+    );
+
     expect(
       screen.getByRole("button", { name: /create account/i }),
     ).toBeDisabled();

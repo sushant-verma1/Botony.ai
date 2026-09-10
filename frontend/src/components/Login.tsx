@@ -13,19 +13,10 @@ interface FormErrors {
   password?: string;
 }
 
-/** `embedded` drops the full-page framing and returns the card alone, for
- *  when the form is a part of a composition rather than the page — the hero
- *  sequence hands off to it in place. `onSwitch` replaces the "Register" link
- *  with a callback, for when the other form is going to take this one's place
- *  in situ rather than at another route. Everything else is identical: same
- *  validation, same submit, same redirect. */
-export default function Login({
-  embedded = false,
-  onSwitch,
-}: {
-  embedded?: boolean;
-  onSwitch?: () => void;
-}) {
+/** The card alone — no page framing. It is always rendered onto the
+ *  character's chest, by the /login route inside AuthScene (see
+ *  components/intro/AuthScene.tsx), which is the page. */
+export default function Login() {
   const [errors, setErrors] = useState<FormErrors>({});
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,6 +24,12 @@ export default function Login({
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+
+  /** What the submit button waits for: the two fields having something in
+   *  them. Only presence — whether the email is an address and the password
+   *  long enough is validate()'s job, on submit, where a message can be shown
+   *  next to the field that is wrong. A greyed button is not a validator. */
+  const incomplete = !email.trim() || !password;
 
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
@@ -76,7 +73,7 @@ export default function Login({
      and the invalid state, so the only markup left here is which control goes
      in which field. Nothing about the submit, the validation or the redirect
      changed with it. */
-  const card = (
+  return (
     <form onSubmit={handleSubmit} className="w-full">
       <FieldGroup className="gap-4">
         <Field data-invalid={!!errors.email || undefined}>
@@ -92,7 +89,9 @@ export default function Login({
           <FieldError>{errors.email}</FieldError>
         </Field>
 
-        <Field data-invalid={!!errors.password || undefined}>
+        {/* data-secret: the scene shuts the character's eyes while this
+            field is hovered or focused (see intro/AuthScene). */}
+        <Field data-invalid={!!errors.password || undefined} data-secret>
           <FieldLabel htmlFor="password">Password</FieldLabel>
           {/* The reveal sits inside the field rather than beside it, so the
               control is still one row whatever the field is laid out at. */}
@@ -120,39 +119,22 @@ export default function Login({
           <FieldError>{errors.password}</FieldError>
         </Field>
 
-        <Button type="submit" disabled={loading} className="w-full">
+        <Button
+          type="submit"
+          disabled={loading || incomplete}
+          className="w-full"
+        >
           {loading && <Spinner />}
           {loading ? "Signing in..." : "Sign In"}
         </Button>
 
         <p className="text-center text-sm text-muted-foreground">
           No account?{" "}
-          {onSwitch ? (
-            <button
-              type="button"
-              onClick={onSwitch}
-              className="underline underline-offset-4"
-            >
-              Register
-            </button>
-          ) : (
-            <Link to="/register" className="underline underline-offset-4">
-              Register
-            </Link>
-          )}
+          <Link to="/register" className="underline underline-offset-4">
+            Register
+          </Link>
         </p>
       </FieldGroup>
     </form>
-  );
-
-  if (embedded) return card;
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-md">
-        <h1 className="mb-6 text-2xl font-bold">Sign In</h1>
-        {card}
-      </div>
-    </div>
   );
 }

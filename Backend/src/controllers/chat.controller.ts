@@ -3,7 +3,6 @@ import { prisma } from "../config/db.js";
 import {
   detectEmergency,
   getEmergencyResponse,
-  getMedicalDisclaimer,
 } from "../utils/safety.util.js";
 import { generateResponse, AIServiceError } from "../services/ai/index.js";
 import type { AIMessage, AIAttachmentContent } from "../services/ai/index.js";
@@ -143,6 +142,7 @@ export const messageController = async (
 ) => {
   const conversationId = req.params.chatid;
   const { content, attachmentIds = [] } = req.body;
+  const handlerStartedAt = Date.now();
   logger.info("Message received", {
     userId: req.user.userId,
     conversationId,
@@ -334,9 +334,18 @@ export const messageController = async (
       }),
     );
 
+    // Split the handler into "before the AI call" (attachments, history, DB)
+    // / "the AI call" / "after it returns", so a slow reply can be attributed
+    // to the right stage.
+    const aiStartedAt = Date.now();
     const aiResult = await generateResponse(messagesForClaude, aiAttachments);
-    const claudeResponse = aiResult.text + getMedicalDisclaimer();
+    const aiMs = Date.now() - aiStartedAt;
+    // No blanket disclaimer is appended: the composer carries a permanent one
+    // and the system prompt decides per answer whether a referral is warranted,
+    // so a simple educational question is not buried under a warning block.
+    const claudeResponse = aiResult.text;
 
+    const persistStartedAt = Date.now();
     const assistantMessage = await prisma.message.create({
       data: {
         conversationId,
@@ -345,6 +354,20 @@ export const messageController = async (
         userId: req.user.userId,
         emergencyDetected: false,
       },
+    });
+    const persistMs = Date.now() - persistStartedAt;
+
+    logger.info("Message handled", {
+      conversationId,
+      provider: aiResult.provider,
+      model: aiResult.model,
+      beforeAiMs: aiStartedAt - handlerStartedAt,
+      aiMs,
+      persistMs,
+      totalMs: Date.now() - handlerStartedAt,
+      attachmentCount: aiAttachments.length,
+      inputTokens: aiResult.usage?.inputTokens,
+      outputTokens: aiResult.usage?.outputTokens,
     });
 
     return res.json({

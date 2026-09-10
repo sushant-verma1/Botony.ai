@@ -1,7 +1,6 @@
-import { createContext, useContext, useState, useEffect, useRef } from "react";
+import { createContext, useContext, useState, useEffect } from "react";
 import type { ReactNode } from "react";
-import { authAPI } from "../services/api/api";
-import api from "../services/api/api";
+import { authAPI, authSession } from "../services/api/api";
 import type { User, AuthContextType } from "../types/auth";
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -15,20 +14,36 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const accessTokenRef = useRef<string | null>(null);
-  accessTokenRef.current = accessToken;
+  // Registered before the restore effect below so a token refreshed by the
+  // interceptor mid-session still reaches React state.
+  useEffect(() => {
+    return authSession.register({
+      onRefreshed: (data) => {
+        setAccessToken(data.accessToken);
+
+        if (data.user) {
+          setUser(data.user);
+        }
+      },
+      onAuthFailure: () => {
+        setAccessToken(null);
+        setUser(null);
+      },
+    });
+  }, []);
 
   useEffect(() => {
     const restoreSession = async () => {
       try {
-        const { data } = await authAPI.refresh();
+        const data = await authSession.refresh();
 
         setAccessToken(data.accessToken);
 
         if (data.user) {
           setUser(data.user);
         }
-      } catch (error) {
+      } catch {
+        authSession.setAccessToken(null);
         setAccessToken(null);
         setUser(null);
       } finally {
@@ -39,24 +54,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     restoreSession();
   }, []);
 
-  useEffect(() => {
-    const interceptor = api.interceptors.request.use((config) => {
-      const token = accessTokenRef.current;
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
-
-      return config;
-    });
-
-    return () => {
-      api.interceptors.request.eject(interceptor);
-    };
-  }, []);
-
   const login = async (email: string, password: string) => {
     const { data } = await authAPI.login(email, password);
 
+    // Module first: the request interceptor reads it synchronously, so it must
+    // be current before any request this triggers goes out.
+    authSession.setAccessToken(data.accessToken);
     setAccessToken(data.accessToken);
     setUser(data.user);
   };
@@ -65,6 +68,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       await authAPI.logout();
     } finally {
+      authSession.setAccessToken(null);
       setAccessToken(null);
       setUser(null);
     }

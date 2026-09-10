@@ -29,17 +29,10 @@ interface ErrorResponse {
   message: string;
 }
 
-/** Same two variants as Login: `embedded` returns the form alone, for when it
- *  is part of a composition rather than the page, and `onSwitch` replaces the
- *  "Sign in" link with a callback, for when the other form is going to take
- *  this one's place in situ rather than at another route. */
-export default function Register({
-  embedded = false,
-  onSwitch,
-}: {
-  embedded?: boolean;
-  onSwitch?: () => void;
-}) {
+/** The card alone — no page framing, same as Login. It is always rendered
+ *  onto the character's chest, by the /register route inside AuthScene (see
+ *  components/intro/AuthScene.tsx), which is the page. */
+export default function Register() {
   const [form, setForm] = useState<RegisterForm>({
     firstName: "",
     lastName: "",
@@ -56,6 +49,19 @@ export default function Register({
 
   const { login } = useAuth();
   const navigate = useNavigate();
+
+  /** Same rule as Login's, over every field the server requires plus the two
+   *  consents: presence only, with validate() still doing the real checking on
+   *  submit. Both consents were already gating this button; the fields joining
+   *  them changes nothing about what is enforced. */
+  const incomplete =
+    !form.firstName.trim() ||
+    !form.lastName.trim() ||
+    !form.email.trim() ||
+    !form.password ||
+    !form.age ||
+    !agreedToTerms ||
+    !agreedNotMedicalAdvice;
 
   const validate = (): boolean => {
     const newErrors: FormErrors = {};
@@ -135,7 +141,7 @@ export default function Register({
      which control belongs to which field. The two consents are the same Field
      laid out horizontally, so they inherit the same spacing rhythm as the
      inputs above them instead of being a special case. */
-  const card = (
+  return (
     <form onSubmit={handleSubmit} className="w-full">
       <FieldGroup className="gap-4">
         {/* One name, two boxes: the pair reads as a single row, which is also
@@ -183,7 +189,9 @@ export default function Register({
         </Field>
 
         <div className="flex gap-3">
-          <Field data-invalid={!!errors.password || undefined}>
+          {/* data-secret: the scene shuts the character's eyes while this
+              field is hovered or focused (see intro/AuthScene). */}
+          <Field data-invalid={!!errors.password || undefined} data-secret>
             <FieldLabel htmlFor="register-password">Password</FieldLabel>
             {/* Same reveal as Login: inside the field, so the control is one
                 row whatever width the field ends up at. */}
@@ -235,8 +243,9 @@ export default function Register({
         </div>
 
         {/* Both consents are required to submit — the button below stays
-            disabled until they are given, and handleSubmit checks them again
-            rather than trusting the button's state. */}
+            disabled until they are given, along with every field above, and
+            handleSubmit checks them again rather than trusting the button's
+            state. */}
         <Field orientation="horizontal" className="hero__consent">
           <input
             id="agreedToTerms"
@@ -281,7 +290,7 @@ export default function Register({
 
         <Button
           type="submit"
-          disabled={loading || !agreedToTerms || !agreedNotMedicalAdvice}
+          disabled={loading || incomplete}
           className="w-full"
         >
           {loading && <Spinner />}
@@ -290,32 +299,11 @@ export default function Register({
 
         <p className="text-center text-sm text-muted-foreground">
           Have an account?{" "}
-          {onSwitch ? (
-            <button
-              type="button"
-              onClick={onSwitch}
-              className="underline underline-offset-4"
-            >
-              Sign in
-            </button>
-          ) : (
-            <Link to="/login" className="underline underline-offset-4">
-              Sign in
-            </Link>
-          )}
+          <Link to="/login" className="underline underline-offset-4">
+            Sign in
+          </Link>
         </p>
       </FieldGroup>
     </form>
-  );
-
-  if (embedded) return card;
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-md">
-        <h1 className="mb-6 text-2xl font-bold">Create Account</h1>
-        {card}
-      </div>
-    </div>
   );
 }

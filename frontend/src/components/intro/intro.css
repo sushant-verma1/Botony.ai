@@ -110,6 +110,14 @@
   opacity: 0; /* the timeline owns this */
 }
 
+/* The auth scene stages nothing: there is no timeline to bring these two up
+   from 0, so they are drawn opaque there from the start. AuthScene owns the
+   character's entrance instead, on `svg`'s own transform. */
+.hero__scene--auth .hero__eyes,
+.hero__scene--auth .hero__body {
+  opacity: 1;
+}
+
 /* ---- the chest expression control ------------------------------------- */
 
 /* Everything about where this sits is decided in the character's own

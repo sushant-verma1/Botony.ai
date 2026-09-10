@@ -51,7 +51,7 @@ function fillForm(email: string, password: string) {
 
 function submitForm() {
   const form = screen
-    .getByRole("button", { name: /continue/i })
+    .getByRole("button", { name: /sign in/i })
     .closest("form");
   fireEvent.submit(form!);
 }
@@ -60,7 +60,7 @@ describe("Login", () => {
   it("renders the login form", () => {
     renderLogin();
     expect(
-      screen.getByRole("heading", { name: /login/i }),
+      screen.getByRole("button", { name: /sign in/i }),
     ).toBeInTheDocument();
   });
 
@@ -77,8 +77,20 @@ describe("Login", () => {
   it("renders a login button", () => {
     renderLogin();
     expect(
-      screen.getByRole("button", { name: /continue/i }),
+      screen.getByRole("button", { name: /sign in/i }),
     ).toBeInTheDocument();
+  });
+
+  it("greys the sign-in button out until both fields have something in them", () => {
+    renderLogin();
+    const button = screen.getByRole("button", { name: /sign in/i });
+    expect(button).toBeDisabled();
+
+    fillForm("user@example.com", "");
+    expect(button).toBeDisabled();
+
+    fillForm("user@example.com", "password123");
+    expect(button).not.toBeDisabled();
   });
 
   it("hides the password by default", () => {
@@ -204,7 +216,7 @@ describe("Login interactions", () => {
 
     renderLogin();
     fillForm("user@example.com", "password123");
-    const button = screen.getByRole("button", { name: /continue/i });
+    const button = screen.getByRole("button", { name: /sign in/i });
 
     expect(button).not.toBeDisabled();
     fireEvent.click(button);

@@ -29,6 +29,7 @@ const { mockAttachment, mockCloudinary } = vi.hoisted(() => ({
     uploader: {
       destroy: vi.fn().mockResolvedValue({ result: "ok" }),
       upload: vi.fn(),
+      explicit: vi.fn(),
     },
     url: vi.fn(() => "https://res.cloudinary.com/signed-image-url"),
   },
@@ -60,6 +61,7 @@ import {
   sweepAbandonedAttachments,
   getAiImageUrl,
   extractPdfText,
+  findImageMetadataMarker,
   AttachmentError,
 } from "./attachment.service.js";
 
@@ -71,6 +73,12 @@ const JPEG_BYTES = Buffer.from(
 );
 const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+// Same 1x1 JPEG carrying an APP1 EXIF segment with a GPS-looking
+// ImageDescription — the metadata sanitization exists to remove.
+const EXIF_JPEG_BYTES = Buffer.from(
+  "/9j/4QBLRXhpZgAASUkqAAgAAAACABIBAwABAAAAAQAAAA4BAgAdAAAAJgAAAAAAAABQQVRJRU5ULUdQUy01MS41MDc0Ti0wLjEyNzhXAP/gABBKRklGAAEBAQBgAGAAAP/bAEMAAwICAgICAwICAgMDAwMEBgQEBAQECAYGBQYJCAoKCQgJCQoMDwwKCw4LCQkNEQ0ODxAQERAKDBITEhATDxAQEP/bAEMBAwMDBAMECAQECBALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/AABEIAAEAAQMBIgACEQEDEQH/xAAVAAEBAAAAAAAAAAAAAAAAAAAACP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAABf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJ0AGZf/2Q==",
   "base64",
 );
 const WEBP_BYTES = Buffer.from(
@@ -103,10 +111,25 @@ beforeEach(() => {
   // Cloudinary echoes back the format it was asked to write.
   mockCloudinary.uploader.upload
     .mockReset()
-    .mockImplementation(async (_url: string, options: { format: string }) => ({
+    .mockImplementation(async (_source: string, options: { format: string }) => ({
       ...SANITIZED_IMAGE,
       format: options.format,
     }));
+  // Cloudinary materializes the eager derivative server-side and hands back
+  // its URL — no delivery-URL self-fetch involved.
+  mockCloudinary.uploader.explicit
+    .mockReset()
+    .mockImplementation(
+      async (_publicId: string, options: { eager: { format: string }[] }) => ({
+        eager: [
+          {
+            ...SANITIZED_IMAGE,
+            format: options.eager[0].format,
+            secure_url: "https://res.cloudinary.com/eager-derivative-url",
+          },
+        ],
+      }),
+    );
   mockCloudinary.url.mockClear();
   mockScanAttachment.mockReset().mockResolvedValue({ clean: true, scanner: "clamav" });
   vi.unstubAllGlobals();
@@ -557,32 +580,111 @@ describe("image sanitization", () => {
     mockAttachment.update.mockResolvedValue({ ...pendingImage, status: "READY" });
   }
 
-  it("replaces the stored original with a metadata-stripped derivative", async () => {
+  it("sanitizes via a server-generated eager derivative, never a self-fetch", async () => {
     stageValidJpeg();
 
     await confirmAttachment("user-1", "att-1");
 
-    // The sanitized source is a Cloudinary derivative — Cloudinary strips
-    // EXIF/GPS when it generates one — and it is written back over the same
-    // public_id so nothing unsanitized remains at rest.
-    expect(mockCloudinary.url).toHaveBeenCalledWith(
+    // Cloudinary generates the metadata-stripped derivative server-side...
+    expect(mockCloudinary.uploader.explicit).toHaveBeenCalledWith(
       "medical/images/user-1/uuid",
       expect.objectContaining({
         type: "authenticated",
-        sign_url: true,
-        transformation: [
-          expect.objectContaining({ crop: "limit", quality: "auto" }),
+        resource_type: "image",
+        eager_async: false,
+        eager: [
+          expect.objectContaining({ crop: "limit", quality: "auto", format: "jpg" }),
         ],
       }),
     );
-    expect(mockCloudinary.uploader.upload).toHaveBeenCalledWith(
-      "https://res.cloudinary.com/signed-image-url",
+
+    // ...and the verified bytes are written back over the same public_id from
+    // memory. Handing Cloudinary its own delivery URL is what returned 420 on
+    // every fresh upload, so the source must never be one.
+    const [source, options] = mockCloudinary.uploader.upload.mock.calls[0];
+    expect(source).toMatch(/^data:image\/jpeg;base64,/);
+    expect(source).not.toContain("res.cloudinary.com");
+    expect(options).toEqual(
       expect.objectContaining({
         public_id: "medical/images/user-1/uuid",
         type: "authenticated",
         overwrite: true,
         invalidate: true,
       }),
+    );
+  });
+
+  it("sanitizes a freshly uploaded PNG with no warmed derivative", async () => {
+    // The regression: nothing in this path may depend on a derivative having
+    // been requested before, because for a new upload none ever has.
+    mockAttachment.findUnique.mockResolvedValue({
+      ...pendingImage,
+      mimeType: "image/png",
+    });
+    mockCloudinary.api.resource.mockResolvedValue({
+      bytes: PNG_BYTES.length,
+      format: "png",
+      width: 4000,
+      height: 3000,
+    });
+    mockFetchOnce(PNG_BYTES);
+    mockAttachment.update.mockResolvedValue({ ...pendingImage, status: "READY" });
+
+    const result = await confirmAttachment("user-1", "att-1");
+
+    expect(result.status).toBe("READY");
+    expect(mockCloudinary.uploader.explicit).toHaveBeenCalledTimes(1);
+    expect(mockCloudinary.uploader.upload.mock.calls[0][0]).toMatch(
+      /^data:image\/png;base64,/,
+    );
+    expect(mockCloudinary.uploader.destroy).not.toHaveBeenCalled();
+  });
+
+  it("rejects the upload when the derivative still carries EXIF metadata", async () => {
+    stageValidJpeg();
+    mockFetchOnce(EXIF_JPEG_BYTES);
+    mockAttachment.update.mockResolvedValue({ ...pendingImage, status: "REJECTED" });
+
+    await expect(confirmAttachment("user-1", "att-1")).rejects.toThrow(
+      AttachmentError,
+    );
+
+    expect(mockCloudinary.uploader.upload).not.toHaveBeenCalled();
+    expect(mockCloudinary.uploader.destroy).toHaveBeenCalled();
+    expect(mockAttachment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: "REJECTED" } }),
+    );
+  });
+
+  it("rejects the upload when the derivative comes back in another format", async () => {
+    stageValidJpeg();
+    mockCloudinary.uploader.explicit.mockResolvedValue({
+      eager: [{ ...SANITIZED_IMAGE, format: "png", secure_url: "https://res.cloudinary.com/x" }],
+    });
+    mockAttachment.update.mockResolvedValue({ ...pendingImage, status: "REJECTED" });
+
+    await expect(confirmAttachment("user-1", "att-1")).rejects.toThrow(
+      AttachmentError,
+    );
+    expect(mockCloudinary.uploader.upload).not.toHaveBeenCalled();
+  });
+
+  it("rejects the upload when Cloudinary generates no derivative", async () => {
+    stageValidJpeg();
+    // Cloudinary rejects with a plain object, not an Error — the shape that
+    // used to be logged as "unknown".
+    mockCloudinary.uploader.explicit.mockRejectedValue({
+      message: "Error in loading https://res.cloudinary.com/... - HTTP status code 420",
+      http_code: 400,
+    });
+    mockAttachment.update.mockResolvedValue({ ...pendingImage, status: "REJECTED" });
+
+    await expect(confirmAttachment("user-1", "att-1")).rejects.toThrow(
+      AttachmentError,
+    );
+    expect(mockCloudinary.uploader.destroy).toHaveBeenCalled();
+    expect(mockAttachment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: "REJECTED" } }),
     );
   });
 
@@ -630,6 +732,28 @@ describe("image sanitization", () => {
     await confirmAttachment("user-1", "att-1");
 
     expect(mockCloudinary.uploader.upload).not.toHaveBeenCalled();
+    expect(mockCloudinary.uploader.explicit).not.toHaveBeenCalled();
+  });
+});
+
+describe("findImageMetadataMarker", () => {
+  it("finds the EXIF segment in a JPEG that carries one", () => {
+    expect(findImageMetadataMarker(EXIF_JPEG_BYTES, "jpg")).toBe("APP1 (EXIF/XMP)");
+  });
+
+  it("passes a JPEG whose metadata has been stripped", () => {
+    expect(findImageMetadataMarker(JPEG_BYTES, "jpg")).toBeNull();
+  });
+
+  it("finds PNG text chunks and passes a clean PNG", () => {
+    const tagged = Buffer.concat([
+      PNG_BYTES.subarray(0, 8),
+      Buffer.from([0, 0, 0, 12]),
+      Buffer.from("tEXtComment", "latin1"),
+      PNG_BYTES.subarray(8),
+    ]);
+    expect(findImageMetadataMarker(tagged, "png")).toBe("tEXt");
+    expect(findImageMetadataMarker(PNG_BYTES, "png")).toBeNull();
   });
 });
 

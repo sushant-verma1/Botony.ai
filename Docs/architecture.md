@@ -47,8 +47,7 @@ Preferred flow:
 User
 → Validation
 → Emergency Detection
-→ Claude
-→ Medical Disclaimer
+→ Claude (system prompt decides when a referral or limit is stated)
 → Save Conversation
 → Response
 

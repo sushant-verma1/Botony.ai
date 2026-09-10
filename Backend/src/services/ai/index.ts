@@ -1,12 +1,12 @@
 import * as Sentry from "@sentry/node";
 import logger from "../logger.js";
-import { generateWithGrok } from "./grok.provider.js";
 import { generateWithGemini } from "./gemini.provider.js";
+import { generateWithGroq } from "./groq.provider.js";
 import { AIProviderError, AIServiceError } from "./types.js";
 import type { AIAttachmentContent, AIMessage, AIResponse } from "./types.js";
 
 // Tags only — never the prompt/message content itself.
-function reportProviderFailure(error: unknown, provider: "grok" | "gemini") {
+function reportProviderFailure(error: unknown, provider: "gemini" | "groq") {
   Sentry.captureException(error, {
     tags: {
       aiProvider: provider,
@@ -25,51 +25,103 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * Grok is primary. A retryable Grok failure (timeout, 429, 5xx, network error)
- * gets one retry, then one Gemini attempt. A non-retryable Grok failure
+ * Gemini is primary. A retryable Gemini failure (timeout, 429, 5xx, network
+ * error) gets one retry, then one Groq attempt. A non-retryable Gemini failure
  * (4xx other than 429) goes straight to AIServiceError — failing over to
- * Gemini would not help and would double the cost of a bad request.
+ * Groq would not help and would double the cost of a bad request.
  * At most 3 upstream calls total; never an unbounded loop.
  */
 async function generateResponse(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
 ): Promise<AIResponse> {
+  // Attempt-level timings, so a slow response can be attributed to a single
+  // slow call rather than to retries and failover stacking up.
+  const startedAt = Date.now();
+  logger.info("AI generation started", {
+    provider: "gemini",
+    attempt: 1,
+    messageCount: messages.length,
+    attachmentCount: attachments.length,
+  });
+
+  let attemptStartedAt = Date.now();
   try {
-    return await generateWithGrok(messages, attachments);
+    const response = await generateWithGemini(messages, attachments);
+    logger.info("AI generation succeeded", {
+      provider: "gemini",
+      attempt: 1,
+      retries: 0,
+      attemptMs: Date.now() - attemptStartedAt,
+      totalMs: Date.now() - startedAt,
+    });
+    return response;
   } catch (firstError) {
+    logger.warn("AI generation attempt failed", {
+      provider: "gemini",
+      attempt: 1,
+      attemptMs: Date.now() - attemptStartedAt,
+      status: firstError instanceof AIProviderError ? firstError.status : undefined,
+      retryable: firstError instanceof AIProviderError ? firstError.retryable : false,
+    });
+
     if (!(firstError instanceof AIProviderError) || !firstError.retryable) {
-      logger.error("Grok failed with a non-retryable error", {
+      logger.error("Gemini failed with a non-retryable error", {
         status: firstError instanceof AIProviderError ? firstError.status : undefined,
+        totalMs: Date.now() - startedAt,
       });
       throw new AIServiceError(AI_UNAVAILABLE_MESSAGE, 503, firstError);
     }
 
-    logger.warn("Grok request failed, retrying once", {
+    logger.warn("Gemini request failed, retrying once", {
       status: firstError.status,
+      retryDelayMs: RETRY_DELAY_MS,
     });
     await delay(RETRY_DELAY_MS);
 
+    attemptStartedAt = Date.now();
+    logger.info("AI generation started", { provider: "gemini", attempt: 2 });
     try {
-      return await generateWithGrok(messages, attachments);
+      const response = await generateWithGemini(messages, attachments);
+      logger.info("AI generation succeeded", {
+        provider: "gemini",
+        attempt: 2,
+        retries: 1,
+        attemptMs: Date.now() - attemptStartedAt,
+        totalMs: Date.now() - startedAt,
+      });
+      return response;
     } catch (secondError) {
-      logger.warn("Grok retry failed, failing over to Gemini", {
+      logger.warn("Gemini retry failed, failing over to Groq", {
         status:
           secondError instanceof AIProviderError ? secondError.status : undefined,
+        attemptMs: Date.now() - attemptStartedAt,
+        totalMs: Date.now() - startedAt,
       });
 
+      attemptStartedAt = Date.now();
+      logger.info("AI generation started", { provider: "groq", attempt: 3 });
       try {
-        return await generateWithGemini(messages, attachments);
-      } catch (geminiError) {
-        logger.error("Both Grok and Gemini failed", {
-          geminiStatus:
-            geminiError instanceof AIProviderError
-              ? geminiError.status
-              : undefined,
+        const response = await generateWithGroq(messages, attachments);
+        logger.info("AI generation succeeded", {
+          provider: "groq",
+          attempt: 3,
+          retries: 2,
+          attemptMs: Date.now() - attemptStartedAt,
+          totalMs: Date.now() - startedAt,
         });
-        reportProviderFailure(secondError, "grok");
-        reportProviderFailure(geminiError, "gemini");
-        throw new AIServiceError(AI_UNAVAILABLE_MESSAGE, 503, geminiError);
+        return response;
+      } catch (groqError) {
+        logger.error("Both Gemini and Groq failed", {
+          groqStatus:
+            groqError instanceof AIProviderError ? groqError.status : undefined,
+          groqAttemptMs: Date.now() - attemptStartedAt,
+          totalMs: Date.now() - startedAt,
+          retries: 2,
+        });
+        reportProviderFailure(secondError, "gemini");
+        reportProviderFailure(groqError, "groq");
+        throw new AIServiceError(AI_UNAVAILABLE_MESSAGE, 503, groqError);
       }
     }
   }

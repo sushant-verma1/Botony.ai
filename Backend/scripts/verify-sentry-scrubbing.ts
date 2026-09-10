@@ -21,7 +21,7 @@ for (const name of [
   "DATABASE_URL",
   "ACCESS_TOKEN_SECRET",
   "REFRESH_TOKEN_SECRET",
-  "XAI_API_KEY",
+  "GROQ_API_KEY",
   "GEMINI_API_KEY",
   "CLOUDINARY_CLOUD_NAME",
   "CLOUDINARY_API_KEY",
@@ -149,7 +149,7 @@ async function main() {
     );
     scope.setExtra("apiKey", SECRET.apiKey);
     scope.setExtra("password", SECRET.password);
-    scope.setTag("provider", "grok");
+    scope.setTag("provider", "groq");
     scope.setContext("request", {
       url: `https://api.botony.test/api/chat/c_1/message?token=${SECRET.jwt}`,
       headers: {
@@ -221,7 +221,7 @@ async function main() {
   const wire = JSON.stringify(event);
   check("exception value retained", wire.includes("Provider call failed"));
   check("stack trace retained", wire.includes("stacktrace"));
-  check("non-sensitive tag retained", event["tags"]?.provider === "grok");
+  check("non-sensitive tag retained", event["tags"]?.provider === "groq");
   check(
     "opaque user id retained for correlation",
     event["user"]?.id === "user_123",
