@@ -3,11 +3,18 @@ export interface NewChatResponse {
   message: string
 }
 
-export interface SendMessageResponse {
+/** The payload of the stream's `done` event — the answer arrived as deltas. */
+export interface SendMessageResult {
   messageId: string
   assistantMessageId: string
   type: 'normal' | 'emergency'
-  response: string
+}
+
+export interface MessageStreamHandlers {
+  /** Fired once, when the first visible text is about to arrive. */
+  onStart?: (provider: string) => void
+  onDelta: (text: string) => void
+  signal?: AbortSignal
 }
 
 export type AttachmentKind = 'IMAGE' | 'DOCUMENT'

@@ -203,3 +203,117 @@ describe("api response interceptor", () => {
     expect(refreshCalls).toBe(1);
   });
 });
+
+describe("authSession.fetch (streaming requests)", () => {
+  const calls: { url: string; auth: unknown; credentials?: string }[] = [];
+
+  function respond(status: number): Response {
+    return { status, ok: status < 400 } as Response;
+  }
+
+  /** Answers with 401 until the refreshed token shows up. */
+  function stubFetch(tokenThatWorks = "new-token") {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        const auth = (init.headers as Record<string, string>).Authorization;
+        calls.push({
+          url,
+          auth,
+          credentials: init.credentials,
+        });
+
+        return respond(auth === `Bearer ${tokenThatWorks}` ? 200 : 401);
+      }),
+    );
+  }
+
+  beforeEach(() => {
+    calls.length = 0;
+    vi.unstubAllGlobals();
+  });
+
+  it("13. sends the access token as a bearer header, never the refresh token", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => respond(200)));
+
+    const response = await authSession.fetch("/chat/c1/message", {
+      method: "POST",
+      body: JSON.stringify({ content: "hi" }),
+    });
+
+    expect(response.status).toBe(200);
+    const [url, init] = vi.mocked(globalThis.fetch).mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(`${api.defaults.baseURL}/chat/c1/message`);
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer old-token",
+    );
+    // The refresh token stays an HttpOnly cookie carried by credentials alone.
+    expect(init.credentials).toBe("include");
+    expect(JSON.stringify(init.headers)).not.toContain("refresh");
+    expect(String(init.body)).not.toContain("refresh");
+  });
+
+  it("14. refreshes on 401 and replays the streaming request with the new token", async () => {
+    let refreshCalls = 0;
+    handle = (config) => {
+      refreshCalls += 1;
+      return ok(config, { accessToken: "new-token" });
+    };
+    stubFetch();
+
+    const response = await authSession.fetch("/chat/c1/message", {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    expect(refreshCalls).toBe(1);
+    expect(calls.map((c) => c.auth)).toEqual([
+      "Bearer old-token",
+      "Bearer new-token",
+    ]);
+    expect(authSession.getAccessToken()).toBe("new-token");
+  });
+
+  it("14b. reports the original 401 and signals auth failure when the refresh fails", async () => {
+    handle = (config) => unauthorized(config);
+    stubFetch();
+
+    const response = await authSession.fetch("/chat/c1/message");
+
+    expect(response.status).toBe(401);
+    expect(authSession.getAccessToken()).toBeNull();
+    expect(onAuthFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("15. shares one refresh between concurrent streaming and Axios 401s", async () => {
+    let refreshCalls = 0;
+    handle = (config) => {
+      if (config.url === "/auth/refresh") {
+        refreshCalls += 1;
+        // Deferred so every 401 lands while the refresh is still in flight.
+        return new Promise((resolve) =>
+          setTimeout(() => resolve(ok(config, { accessToken: "new-token" })), 10),
+        );
+      }
+
+      return bearer(config) === "Bearer new-token"
+        ? ok(config, { ok: true })
+        : unauthorized(config);
+    };
+    stubFetch();
+
+    const [first, second] = await Promise.all([
+      authSession.fetch("/chat/a/message"),
+      authSession.fetch("/chat/b/message"),
+      api.get("/chat/conversations"),
+    ]);
+
+    expect(refreshCalls).toBe(1);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(calls.filter((c) => c.auth === "Bearer new-token")).toHaveLength(2);
+  });
+});

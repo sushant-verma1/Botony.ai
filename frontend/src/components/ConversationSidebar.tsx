@@ -1,6 +1,36 @@
 import { useRef, useState } from "react";
+import {
+  Ellipsis,
+  Pencil,
+  Plus,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import type { ConversationSummary } from "../types/chat";
+import Mark from "./Mark";
 import Spinner from "./Spinner";
+import { Button } from "./ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { Input } from "./ui/input";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuAction,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar,
+} from "./ui/sidebar";
 
 interface ConversationSidebarProps {
   conversations: ConversationSummary[];
@@ -23,39 +53,76 @@ export default function ConversationSidebar({
   creatingChat,
   disabled,
 }: ConversationSidebarProps) {
+  const { isMobile, setOpenMobile } = useSidebar();
+
+  // On a phone the rail is a sheet over the transcript, so picking a
+  // conversation has to close it or the thing you chose is behind it.
+  const select = (id: string) => {
+    onSelect(id);
+    if (isMobile) setOpenMobile(false);
+  };
+
   return (
-    <div className="w-64 shrink-0 bg-white border-r flex flex-col h-full">
-      <div className="p-3 border-b">
-        <button
+    <Sidebar collapsible="offcanvas" className="border-r border-border">
+      <SidebarHeader className="gap-4 px-3 pt-4 pb-3">
+        <div className="flex items-center gap-2.5 px-1">
+          <Mark className="w-[26px] text-foreground" />
+          <span className="text-[19px] tracking-[-0.012em]">Botony</span>
+        </div>
+
+        {/* .button--solid, in the shape the sidebar needs it. */}
+        <Button
           onClick={onNewChat}
           disabled={disabled || creatingChat}
-          className="w-full bg-blue-600 text-white text-sm font-medium py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+          className="h-9 w-full justify-start gap-2 rounded-full px-4 text-[13.5px]"
         >
-          {creatingChat && <Spinner className="h-4 w-4" />}
-          + New Chat
-        </button>
-      </div>
+          {creatingChat ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <Plus className="size-3.5" aria-hidden="true" />
+          )}
+          New conversation
+        </Button>
+      </SidebarHeader>
 
-      <div className="flex-1 overflow-y-auto">
-        {conversations.length === 0 && (
-          <p className="text-sm text-gray-400 text-center mt-6 px-4">
-            No conversations yet
-          </p>
-        )}
+      <SidebarContent>
+        <SidebarGroup className="px-3">
+          <SidebarGroupLabel className="chat-label h-auto px-1 pb-2">
+            Conversations
+          </SidebarGroupLabel>
 
-        {conversations.map((c) => (
-          <ConversationItem
-            key={c.id}
-            conversation={c}
-            isActive={c.id === activeConversationId}
-            disabled={disabled}
-            onSelect={onSelect}
-            onRequestDelete={onRequestDelete}
-            onRename={onRename}
-          />
-        ))}
-      </div>
-    </div>
+          <SidebarGroupContent>
+            {conversations.length === 0 ? (
+              <p className="px-1 py-1 text-[13px] leading-relaxed text-muted-foreground">
+                Nothing here yet. Your conversations will be listed as you
+                start them.
+              </p>
+            ) : (
+              <SidebarMenu className="gap-0.5">
+                {conversations.map((c) => (
+                  <ConversationItem
+                    key={c.id}
+                    conversation={c}
+                    isActive={c.id === activeConversationId}
+                    disabled={disabled}
+                    onSelect={select}
+                    onRequestDelete={onRequestDelete}
+                    onRename={onRename}
+                  />
+                ))}
+              </SidebarMenu>
+            )}
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+
+      {/* The landing's footer note, where it is just as true. */}
+      <SidebarFooter className="px-4 pt-3 pb-5">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Prototype. Not a regulated medical device and not a diagnostic tool.
+        </p>
+      </SidebarFooter>
+    </Sidebar>
   );
 }
 
@@ -81,8 +148,7 @@ function ConversationItem({
   const [saving, setSaving] = useState(false);
   const skipBlurSaveRef = useRef(false);
 
-  const startEditing = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const startEditing = () => {
     setDraftTitle(conversation.title || "");
     setIsEditing(true);
   };
@@ -111,9 +177,10 @@ function ConversationItem({
 
   if (isEditing) {
     return (
-      <div className="flex items-center gap-1 px-3 py-2 border-b">
-        <input
+      <SidebarMenuItem className="flex items-center gap-1.5 py-0.5">
+        <Input
           autoFocus
+          aria-label="Conversation title"
           value={draftTitle}
           onChange={(e) => setDraftTitle(e.target.value)}
           onKeyDown={(e) => {
@@ -129,52 +196,65 @@ function ConversationItem({
           }}
           maxLength={100}
           disabled={saving}
-          className="flex-1 min-w-0 text-sm border border-blue-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+          className="h-8 bg-background text-[13px]"
         />
-        {saving && <Spinner className="h-3.5 w-3.5 text-gray-400" />}
-      </div>
+        {saving && <Spinner className="size-3.5 text-muted-foreground" />}
+      </SidebarMenuItem>
     );
   }
 
   return (
-    <div
-      className={`group flex items-center border-b hover:bg-gray-50 ${
-        isActive ? "bg-blue-50 border-l-4 border-l-blue-600" : ""
-      }`}
-    >
-      <button
+    <SidebarMenuItem>
+      <SidebarMenuButton
         onClick={() => onSelect(conversation.id)}
         disabled={disabled}
-        className="flex-1 min-w-0 text-left px-4 py-3 text-sm disabled:opacity-50"
+        isActive={isActive}
+        className="chat-conv h-auto rounded-lg px-2.5 py-2 text-[13.5px] font-normal transition-colors data-active:font-normal"
       >
-        <p className="font-medium text-gray-700 truncate">
-          {conversation.title || "New chat"}
-        </p>
         {conversation.status === "emergency" && (
-          <span className="text-xs text-red-500 font-medium">
-            ⚠ Emergency
-          </span>
+          <TriangleAlert
+            className="size-3.5 text-destructive"
+            aria-hidden="true"
+          />
         )}
-      </button>
-      <button
-        onClick={startEditing}
-        disabled={disabled}
-        aria-label="Rename conversation"
-        className="px-2 text-gray-400 hover:text-blue-600 disabled:opacity-50 opacity-0 group-hover:opacity-100"
-      >
-        ✎
-      </button>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onRequestDelete(conversation.id);
-        }}
-        disabled={disabled}
-        aria-label="Delete conversation"
-        className="px-3 text-gray-400 hover:text-red-600 disabled:opacity-50 opacity-0 group-hover:opacity-100"
-      >
-        ✕
-      </button>
-    </div>
+        <span className={isActive ? undefined : "text-muted-foreground"}>
+          {conversation.title || "New conversation"}
+        </span>
+        {conversation.status === "emergency" && (
+          <span className="sr-only">(emergency)</span>
+        )}
+      </SidebarMenuButton>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          disabled={disabled}
+          render={
+            <SidebarMenuAction
+              showOnHover
+              aria-label={`Options for ${conversation.title || "New conversation"}`}
+            />
+          }
+        >
+          <Ellipsis aria-hidden="true" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="right"
+          align="start"
+          className="w-auto min-w-40"
+        >
+          <DropdownMenuItem onClick={startEditing}>
+            <Pencil aria-hidden="true" />
+            Rename conversation
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => onRequestDelete(conversation.id)}
+          >
+            <Trash2 aria-hidden="true" />
+            Delete conversation
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </SidebarMenuItem>
   );
 }

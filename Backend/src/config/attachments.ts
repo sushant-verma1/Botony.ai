@@ -47,8 +47,8 @@ export const PDF_TEXT_CHAR_LIMIT = 20_000;
 export const SIGNATURE_SNIFF_BYTES = 4100;
 
 export const CLOUDINARY_FOLDERS = {
-  IMAGE: "medical/images",
-  DOCUMENT: "medical/reports",
+  IMAGE: "botony/images",
+  DOCUMENT: "botony/reports",
 } as const;
 
 // Cloudinary URL lifetimes, in seconds.

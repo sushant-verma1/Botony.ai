@@ -53,13 +53,17 @@ export const attachmentAPI = {
     formData.append('timestamp', String(signature.timestamp))
     formData.append('signature', signature.signature)
     formData.append('public_id', signature.publicId)
+    formData.append('asset_folder', signature.folder)
     formData.append('type', signature.type)
     if (signature.allowedFormats) {
       formData.append('allowed_formats', signature.allowedFormats)
     }
 
     const uploadUrl = `https://api.cloudinary.com/v1_1/${signature.cloudName}/${signature.resourceType}/upload`
-    const response = await fetch(uploadUrl, { method: 'POST', body: formData })
+    const response = await fetch(uploadUrl, {
+      method: 'POST',
+      body: formData,
+    })
     if (!response.ok) {
       throw new Error('Upload to storage failed')
     }

@@ -20,6 +20,12 @@ export const loginSchema = Joi.object({
   password: Joi.string().min(8).required(),
 });
 
+/** The profile form shows one editable field, so this accepts one. The bound
+ *  is createUserSchema's for firstName, because it writes the same column. */
+export const updateProfileSchema = Joi.object({
+  firstName: Joi.string().trim().min(3).max(20).required(),
+});
+
 export const createConversationSchema = Joi.object({
   title: Joi.string().max(100).optional(),
 

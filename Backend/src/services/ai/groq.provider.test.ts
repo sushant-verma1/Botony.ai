@@ -22,7 +22,7 @@ vi.mock("openai", () => {
 });
 
 import OpenAI from "openai";
-import { generateWithGroq } from "./groq.provider.js";
+import { generateWithGroq, streamWithGroq } from "./groq.provider.js";
 import { AIProviderError } from "./types.js";
 import { groqModel } from "../../config/config.js";
 
@@ -280,5 +280,123 @@ describe("generateWithGroq reasoning separation", () => {
     await expect(generateWithGroq(messages)).rejects.toBeInstanceOf(
       AIProviderError,
     );
+  });
+});
+
+// --- streaming ---------------------------------------------------------
+
+interface GroqDelta {
+  content?: string | null;
+  reasoning?: string | null;
+}
+
+function groqStream(...deltas: GroqDelta[]) {
+  return Promise.resolve(
+    (async function* () {
+      for (const delta of deltas) {
+        yield { choices: [{ delta, finish_reason: null }] };
+      }
+    })(),
+  );
+}
+
+async function collectGroq(stream: AsyncGenerator<string>): Promise<string[]> {
+  const out: string[] = [];
+  for await (const delta of stream) out.push(delta);
+  return out;
+}
+
+describe("streamWithGroq", () => {
+  it("streams delta.content with the non-thinking configuration", async () => {
+    mockCreate.mockReturnValue(
+      groqStream({ content: "groq " }, { content: "says hi" }),
+    );
+
+    expect(await collectGroq(streamWithGroq(messages))).toEqual([
+      "groq ",
+      "says hi",
+    ]);
+
+    const sent = mockCreate.mock.calls[0][0];
+    expect(sent.stream).toBe(true);
+    expect(sent.reasoning_effort).toBe("none");
+    expect(sent.max_tokens).toBe(1000);
+    expect(sent.model).toBe(groqModel);
+  });
+
+  it("never streams delta.reasoning", async () => {
+    mockCreate.mockReturnValue(
+      groqStream(
+        { reasoning: "chain of thought here" },
+        { content: "the answer" },
+      ),
+    );
+
+    const text = (await collectGroq(streamWithGroq(messages))).join("");
+
+    expect(text).toBe("the answer");
+    expect(text).not.toContain("chain of thought");
+  });
+
+  it("withholds an inline <think> block split across deltas", async () => {
+    mockCreate.mockReturnValue(
+      groqStream(
+        { content: "visible <th" },
+        { content: "ink>hidden</thi" },
+        { content: "nk> tail" },
+      ),
+    );
+
+    const text = (await collectGroq(streamWithGroq(messages))).join("");
+
+    expect(text).toBe("visible  tail");
+    expect(text).not.toContain("hidden");
+  });
+
+  it("inlines an attached image as a data URL, not the signed URL", async () => {
+    mockImageFetch("image/png");
+    mockCreate.mockReturnValue(groqStream({ content: "looks like a rash" }));
+
+    await collectGroq(
+      streamWithGroq(messages, [
+        { type: "image", url: "https://signed.example/image" },
+      ]),
+    );
+
+    const sent = mockCreate.mock.calls[0][0];
+    const parts = sent.messages.at(-1).content;
+    expect(parts.at(-1).type).toBe("image_url");
+    expect(parts.at(-1).image_url.url).toContain("data:image/png;base64,");
+    expect(JSON.stringify(sent.messages)).not.toContain("signed.example");
+  });
+
+  it("passes extracted document text alongside the question", async () => {
+    mockCreate.mockReturnValue(groqStream({ content: "ok" }));
+
+    await collectGroq(
+      streamWithGroq(messages, [
+        { type: "text", label: "attached document", text: "HbA1c 5.4%" },
+      ]),
+    );
+
+    const sent = mockCreate.mock.calls[0][0];
+    expect(sent.messages.at(-1).content).toContain("HbA1c 5.4%");
+  });
+
+  it("forwards the abort signal to the client", async () => {
+    const controller = new AbortController();
+    mockCreate.mockReturnValue(groqStream({ content: "ok" }));
+
+    await collectGroq(streamWithGroq(messages, [], controller.signal));
+
+    expect(mockCreate.mock.calls[0][1]).toEqual({ signal: controller.signal });
+  });
+
+  it("fails non-retryably when the stream carries no content", async () => {
+    mockCreate.mockReturnValue(groqStream({ reasoning: "only thinking" }));
+
+    await expect(
+      collectGroq(streamWithGroq(messages)),
+    ).rejects.toMatchObject({ name: "AIProviderError", retryable: false });
   });
 });

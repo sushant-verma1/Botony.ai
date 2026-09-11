@@ -15,6 +15,11 @@ export type RefreshResponse = {
   user: User;
 };
 
+export type ProfileResponse = {
+  message: string;
+  user: User;
+};
+
 export type AuthContextType = {
   user: User | null;
   accessToken: string | null;
@@ -22,4 +27,5 @@ export type AuthContextType = {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  updateProfile: (name: string) => Promise<void>;
 };

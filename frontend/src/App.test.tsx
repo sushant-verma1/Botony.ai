@@ -43,7 +43,9 @@ function renderAt(path: string) {
 }
 
 describe("App routing", () => {
-  it("redirects an authenticated user from / to the chat dashboard", async () => {
+  // "/" is the landing for everyone since the landing page landed; the chat
+  // has its own route rather than taking over the root.
+  it("renders the chat dashboard at /chat for an authenticated user", async () => {
     mockUseAuth.mockReturnValue({
       user: { name: "Test User", email: "test@example.com" },
       logout: vi.fn(),
@@ -51,13 +53,15 @@ describe("App routing", () => {
       isLoggedIn: true,
     });
 
-    renderAt("/");
+    renderAt("/chat");
 
     await waitFor(() =>
-      expect(screen.getByText(/medical ai/i)).toBeInTheDocument(),
+      expect(
+        screen.getByPlaceholderText(/describe your symptoms/i),
+      ).toBeInTheDocument(),
     );
     expect(
-      screen.getByRole("button", { name: /new chat/i }),
+      screen.getByRole("button", { name: /new conversation/i }),
     ).toBeInTheDocument();
   });
 

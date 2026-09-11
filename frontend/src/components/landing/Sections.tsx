@@ -8,6 +8,8 @@
  * of those and a medical product is the worst place to imply them.
  */
 
+import { LIMITS } from "./limits";
+
 function Eyebrow({ children }: { children: string }) {
   return <p className="eyebrow">{children}</p>;
 }
@@ -112,13 +114,6 @@ function Capabilities() {
 }
 
 /* ---- 4. trust and safety ------------------------------------------------ */
-
-const LIMITS = [
-  "It does not diagnose conditions.",
-  "It does not prescribe or adjust medication.",
-  "It does not replace a clinician who can examine you.",
-  "It is a prototype, and is not a regulated medical device.",
-];
 
 function Safety() {
   return (

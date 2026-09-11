@@ -180,6 +180,36 @@ export const refreshController = async (req: Request, res: Response) => {
   }
 };
 
+export const updateProfileController = async (req: Request, res: Response) => {
+  const { firstName } = req.body;
+  const { userId } = req.user;
+
+  try {
+    // Scoped by the id on the access token, never by one from the body, so
+    // this can only ever rewrite the caller's own row.
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { firstName },
+      select: { firstName: true, email: true },
+    });
+
+    logger.info("Profile updated", { userId });
+
+    return res.status(200).json({
+      message: "Profile updated",
+      user: { name: user.firstName, email: user.email },
+    });
+  } catch (error: any) {
+    logger.error("Profile update error", {
+      message: error.message,
+      stack: error.stack,
+      userId,
+    });
+
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 export const logoutController = async (req: Request, res: Response) => {
   logger.info("User logged out");
 

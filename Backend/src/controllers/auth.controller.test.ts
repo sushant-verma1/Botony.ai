@@ -13,6 +13,7 @@ vi.mock("../config/db.js", () => ({
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
+      update: vi.fn(),
     },
   },
 }));
@@ -23,6 +24,7 @@ import {
   loginController,
   refreshController,
   logoutController,
+  updateProfileController,
 } from "./auth.controller.js";
 
 function buildReq(overrides: Partial<Request> = {}): Request {
@@ -33,6 +35,7 @@ beforeEach(() => {
   vi.mocked(prisma.user.findFirst).mockReset();
   vi.mocked(prisma.user.findUnique).mockReset();
   vi.mocked(prisma.user.create).mockReset();
+  vi.mocked(prisma.user.update).mockReset();
 });
 
 describe("registerController", () => {
@@ -240,5 +243,50 @@ describe("logoutController", () => {
     expect(res.clearCookie).toHaveBeenCalledWith("refreshToken");
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ message: "Logout successful" });
+  });
+});
+
+describe("updateProfileController", () => {
+  it("writes the new name to the caller's own row and returns it", async () => {
+    vi.mocked(prisma.user.update).mockResolvedValue({
+      firstName: "Janet",
+      email: "jane@example.com",
+    } as never);
+
+    const req = buildReq({
+      body: { firstName: "Janet" },
+      user: { userId: "user-1" },
+    } as Partial<Request>);
+    const res = createMockRes();
+
+    await updateProfileController(req, res as Response);
+
+    // The id comes from the token, so a body carrying someone else's id
+    // cannot reach the where clause.
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: "user-1" },
+      data: { firstName: "Janet" },
+      select: { firstName: true, email: true },
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      message: "Profile updated",
+      user: { name: "Janet", email: "jane@example.com" },
+    });
+  });
+
+  it("returns 500 without leaking the error when the write fails", async () => {
+    vi.mocked(prisma.user.update).mockRejectedValue(new Error("db down"));
+
+    const req = buildReq({
+      body: { firstName: "Janet" },
+      user: { userId: "user-1" },
+    } as Partial<Request>);
+    const res = createMockRes();
+
+    await updateProfileController(req, res as Response);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ message: "Server error" });
   });
 });

@@ -38,6 +38,50 @@ export interface AIResponse {
   finishReason?: string;
 }
 
+export type AIProviderName = "gemini" | "groq";
+
+/**
+ * What a streaming generation emits. `done` carries the assembled answer —
+ * the deltas are never persisted individually.
+ */
+export type AIStreamEvent =
+  | { type: "start"; provider: AIProviderName; model: string }
+  | { type: "delta"; text: string }
+  | {
+      type: "done";
+      text: string;
+      provider: AIProviderName;
+      model: string;
+      retries: number;
+      chunks: number;
+      firstChunkMs?: number;
+      totalMs: number;
+    };
+
+/**
+ * A provider died after visible text had already reached the patient. Failing
+ * over here would splice two models' answers together mid-sentence, so the
+ * stream ends instead — see streamResponse.
+ */
+export class AIStreamInterruptedError extends Error {
+  userMessage: string;
+  provider: AIProviderName;
+  originalMessage?: string;
+
+  constructor(
+    userMessage: string,
+    provider: AIProviderName,
+    originalError?: unknown,
+  ) {
+    super(userMessage);
+    this.name = "AIStreamInterruptedError";
+    this.userMessage = userMessage;
+    this.provider = provider;
+    this.originalMessage =
+      originalError instanceof Error ? originalError.message : undefined;
+  }
+}
+
 export class AIProviderError extends Error {
   provider: "gemini" | "groq";
   status?: number;

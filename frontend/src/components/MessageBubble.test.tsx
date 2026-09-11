@@ -14,17 +14,20 @@ function buildMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   };
 }
 
+/* The turn is told apart by who is speaking, not by how it is painted — so
+   these read the heading each turn carries for a screen reader rather than
+   the classes on it. */
 describe("MessageBubble", () => {
   it("renders the message content", () => {
     render(<MessageBubble message={buildMessage({ content: "I have a headache" })} />);
     expect(screen.getByText("I have a headache")).toBeInTheDocument();
   });
 
-  it("renders a user message aligned to the right", () => {
-    const { container } = render(
-      <MessageBubble message={buildMessage({ role: "user" })} />,
-    );
-    expect(container.querySelector(".justify-end")).toBeInTheDocument();
+  it("attributes a user message to you", () => {
+    render(<MessageBubble message={buildMessage({ role: "user" })} />);
+
+    expect(screen.getByRole("heading", { name: "You" })).toBeInTheDocument();
+    expect(screen.queryByText(/emergency/i)).not.toBeInTheDocument();
   });
 
   it("renders a normal assistant message", () => {
@@ -37,8 +40,10 @@ describe("MessageBubble", () => {
         })}
       />,
     );
+
     expect(screen.getByText("General health info")).toBeInTheDocument();
-    expect(screen.getByText("🩺")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Botony" })).toBeInTheDocument();
+    expect(screen.queryByText(/emergency/i)).not.toBeInTheDocument();
   });
 
   it("renders an emergency warning for emergency assistant messages", () => {
@@ -51,14 +56,15 @@ describe("MessageBubble", () => {
         })}
       />,
     );
+
     expect(
       screen.getByText("Call emergency services immediately"),
     ).toBeInTheDocument();
-    expect(screen.getByText("🚨")).toBeInTheDocument();
+    expect(screen.getByText(/^emergency$/i)).toBeInTheDocument();
   });
 
   it("does not apply emergency styling to a user message even if emergencyDetected is true", () => {
-    const { container } = render(
+    render(
       <MessageBubble
         message={buildMessage({
           role: "user",
@@ -71,7 +77,7 @@ describe("MessageBubble", () => {
     expect(
       screen.getByText("I typed chest pain by mistake"),
     ).toBeInTheDocument();
-    expect(container.querySelector(".justify-end")).toBeInTheDocument();
-    expect(screen.queryByText("🚨")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "You" })).toBeInTheDocument();
+    expect(screen.queryByText(/emergency/i)).not.toBeInTheDocument();
   });
 });

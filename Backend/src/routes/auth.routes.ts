@@ -4,9 +4,14 @@ import {
   loginController,
   logoutController,
   refreshController,
+  updateProfileController,
 } from "../controllers/auth.controller.js";
 import { validate } from "../middleware/validate.middleware.js";
-import { createUserSchema, loginSchema } from "../validation/validate.js";
+import {
+  createUserSchema,
+  loginSchema,
+  updateProfileSchema,
+} from "../validation/validate.js";
 import { protect } from "../middleware/auth.middleware.js";
 import {
   loginLimiter,
@@ -21,6 +26,12 @@ authRouter.post(
   registerLimiter,
   validate(createUserSchema),
   registerController,
+);
+authRouter.patch(
+  "/profile",
+  protect,
+  validate(updateProfileSchema),
+  updateProfileController,
 );
 authRouter.post("/logout", protect, logoutController);
 authRouter.post("/refresh", refreshController);

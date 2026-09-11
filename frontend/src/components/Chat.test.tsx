@@ -29,7 +29,7 @@ vi.mock("../services/api/chatApi", () => ({
     getConversations: vi.fn(),
     createConversation: vi.fn(),
     getHistory: vi.fn(),
-    sendMessage: vi.fn(),
+    streamMessage: vi.fn(),
     deleteConversation: vi.fn(),
     renameConversation: vi.fn(),
   },
@@ -38,6 +38,32 @@ vi.mock("../services/api/chatApi", () => ({
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
+
+// Replays a finished answer as the deltas the backend streams, so the
+// component is exercised through the same path as production.
+function mockStream(
+  text: string,
+  result: Partial<{
+    messageId: string;
+    assistantMessageId: string;
+    type: "normal" | "emergency";
+  }> = {},
+) {
+  vi.mocked(chatAPI.streamMessage).mockImplementation(
+    async (_conversationId, _message, _attachmentIds, handlers) => {
+      handlers.onStart?.("gemini");
+      for (const chunk of text.match(/[\s\S]{1,12}/g) ?? []) {
+        handlers.onDelta(chunk);
+      }
+      return {
+        messageId: "user-msg-1",
+        assistantMessageId: "assistant-msg-1",
+        type: "normal",
+        ...result,
+      };
+    },
+  );
+}
 
 function buildConversation(
   overrides: Partial<ConversationSummary> = {},
@@ -87,19 +113,41 @@ async function renderChatAndWaitForReady() {
   return input;
 }
 
+/** The composer is a textarea, and jsdom reports a textarea's value as its
+ *  text content — so "did it roll back" is asked of the transcript alone. */
+function transcript() {
+  return within(screen.getByTestId("messages-container"));
+}
+
+/** The rail row and the top bar both carry the active title, so anything about
+ *  a row is asked of the row's own options button. */
+function rowOption(title: string) {
+  return screen.getByRole("button", { name: `Options for ${title}` });
+}
+
+function findRowOption(title: string) {
+  return screen.findByRole("button", { name: `Options for ${title}` });
+}
+
+/** Rename and delete live behind each row's options menu, and the popup mounts
+ *  a tick after the click. */
+async function openRowMenu(
+  user: ReturnType<typeof userEvent.setup>,
+  title: string,
+  item: RegExp,
+) {
+  await user.click(rowOption(title));
+  await user.click(await screen.findByRole("menuitem", { name: item }));
+}
+
 describe("Chat logout", () => {
   it("redirects to the login page after logout is confirmed", async () => {
     const user = userEvent.setup();
     render(<Chat />);
 
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /^logout$/i }),
-      ).toBeInTheDocument(),
-    );
-
-    await user.click(screen.getByRole("button", { name: /^logout$/i }));
-    await user.click(screen.getByRole("button", { name: /^log out$/i }));
+    await user.click(await screen.findByRole("button", { name: /^account:/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /^log out$/i }));
+    await user.click(await screen.findByRole("button", { name: /^log out$/i }));
 
     await waitFor(() => expect(mockLogout).toHaveBeenCalled());
     expect(mockNavigate).toHaveBeenCalledWith("/login");
@@ -109,34 +157,22 @@ describe("Chat logout", () => {
 describe("Chat emergency detection", () => {
   it("shows the emergency warning when the message is flagged as an emergency", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockResolvedValue({
-      data: {
-        messageId: "user-msg-1",
-        assistantMessageId: "assistant-msg-1",
-        type: "emergency",
-        response:
-          "⚠️ EMERGENCY WARNING ⚠️\n\nThis symptom may require IMMEDIATE MEDICAL ATTENTION.",
-      },
-    } as never);
+    mockStream(
+      "⚠️ EMERGENCY WARNING ⚠️\n\nThis symptom may require IMMEDIATE MEDICAL ATTENTION.",
+      { type: "emergency" },
+    );
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "I am having chest pain");
     await user.click(screen.getByRole("button", { name: /^send$/i }));
 
     expect(await screen.findByText(/emergency warning/i)).toBeInTheDocument();
-    expect(screen.getByText("🚨")).toBeInTheDocument();
+    expect(screen.getByText(/^emergency$/i)).toBeInTheDocument();
   });
 
   it("does not show the emergency warning for a normal message", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockResolvedValue({
-      data: {
-        messageId: "user-msg-2",
-        assistantMessageId: "assistant-msg-2",
-        type: "normal",
-        response: "Drink plenty of fluids and get some rest.",
-      },
-    } as never);
+    mockStream("Drink plenty of fluids and get some rest.");
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "I have a mild headache");
@@ -145,21 +181,14 @@ describe("Chat emergency detection", () => {
     expect(
       await screen.findByText(/drink plenty of fluids/i),
     ).toBeInTheDocument();
-    expect(screen.queryByText("🚨")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^emergency$/i)).not.toBeInTheDocument();
   });
 });
 
 describe("Chat messaging", () => {
   it("renders both the user message and the assistant reply after sending", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockResolvedValue({
-      data: {
-        messageId: "u1",
-        assistantMessageId: "a1",
-        type: "normal",
-        response: "Try resting and staying hydrated.",
-      },
-    } as never);
+    mockStream("Try resting and staying hydrated.");
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "I have a sore throat");
@@ -173,7 +202,9 @@ describe("Chat messaging", () => {
 
   it("shows a generic error and rolls back the message when sending fails", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockRejectedValue(new Error("Network Error"));
+    vi.mocked(chatAPI.streamMessage).mockRejectedValue(
+      new Error("Failed to send message"),
+    );
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "I have a sore throat");
@@ -182,21 +213,15 @@ describe("Chat messaging", () => {
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Failed to send message"),
     );
-    expect(screen.queryByText("I have a sore throat")).not.toBeInTheDocument();
+    expect(transcript().queryByText("I have a sore throat")).toBeNull();
     expect(input).toHaveValue("I have a sore throat");
   });
 
   it("shows the backend's token-limit message gracefully when sending fails with that error", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockRejectedValue({
-      isAxiosError: true,
-      response: {
-        data: {
-          message: "Message exceeds token limit. Please start a new conversation.",
-          totalTokens: 51000,
-        },
-      },
-    });
+    vi.mocked(chatAPI.streamMessage).mockRejectedValue(
+      new Error("Message exceeds token limit. Please start a new conversation."),
+    );
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "Tell me a very long story");
@@ -211,16 +236,11 @@ describe("Chat messaging", () => {
 
   it("shows a graceful message and preserves the input when Claude is unavailable (e.g. low credit balance)", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockRejectedValue({
-      isAxiosError: true,
-      response: {
-        status: 503,
-        data: {
-          message:
-            "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
-        },
-      },
-    });
+    vi.mocked(chatAPI.streamMessage).mockRejectedValue(
+      new Error(
+        "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
+      ),
+    );
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "I have a persistent cough");
@@ -231,7 +251,7 @@ describe("Chat messaging", () => {
         "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
       ),
     );
-    expect(screen.queryByText("I have a persistent cough")).not.toBeInTheDocument();
+    expect(transcript().queryByText("I have a persistent cough")).toBeNull();
     expect(input).toHaveValue("I have a persistent cough");
   });
 });
@@ -239,14 +259,7 @@ describe("Chat messaging", () => {
 describe("Chat conversation management", () => {
   it("clears messages and starts a fresh conversation when New Chat is clicked", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockResolvedValue({
-      data: {
-        messageId: "u1",
-        assistantMessageId: "a1",
-        type: "normal",
-        response: "Some reply",
-      },
-    } as never);
+    mockStream("Some reply");
     vi.mocked(chatAPI.createConversation)
       .mockResolvedValueOnce({
         data: { conversationId: "conv-1", message: "ok" },
@@ -260,7 +273,7 @@ describe("Chat conversation management", () => {
     await user.click(screen.getByRole("button", { name: /^send$/i }));
     expect(await screen.findByText("I have a sore throat")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /new chat/i }));
+    await user.click(screen.getByRole("button", { name: /new conversation/i }));
 
     await waitFor(() =>
       expect(chatAPI.createConversation).toHaveBeenCalledTimes(2),
@@ -355,17 +368,16 @@ describe("Chat conversation management", () => {
     render(<Chat />);
     expect(await screen.findByText("Hello from A")).toBeInTheDocument();
 
-    const firstRow = screen.getByText("First chat").closest("div")!;
-    await user.click(
-      within(firstRow).getByRole("button", { name: /delete conversation/i }),
-    );
+    await openRowMenu(user, "First chat", /delete/i);
     await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() =>
       expect(chatAPI.deleteConversation).toHaveBeenCalledWith("conv-a"),
     );
     expect(await screen.findByText("Hello from B")).toBeInTheDocument();
-    expect(screen.queryByText("First chat")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Options for First chat" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renames a conversation and updates the sidebar", async () => {
@@ -388,11 +400,9 @@ describe("Chat conversation management", () => {
     } as never);
 
     render(<Chat />);
-    await screen.findByText("Old title");
+    await findRowOption("Old title");
 
-    await user.click(
-      screen.getByRole("button", { name: /rename conversation/i }),
-    );
+    await openRowMenu(user, "Old title", /rename/i);
     const input = screen.getByDisplayValue("Old title");
     await user.clear(input);
     await user.type(input, "New title{enter}");
@@ -403,8 +413,10 @@ describe("Chat conversation management", () => {
         "New title",
       ),
     );
-    expect(await screen.findByText("New title")).toBeInTheDocument();
-    expect(screen.queryByText("Old title")).not.toBeInTheDocument();
+    expect(await findRowOption("New title")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Options for Old title" }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -447,16 +459,22 @@ describe("Chat pagination", () => {
 });
 
 describe("Chat character counter", () => {
-  it("shows a yellow counter once the message nears 1000 characters", async () => {
+  it("stays out of the way while the limit is far off", async () => {
     const input = await renderChatAndWaitForReady();
     fireEvent.change(input, { target: { value: "a".repeat(1000) } });
-    expect(screen.getByText("1000/3000")).toHaveClass("text-yellow-500");
+    expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
   });
 
-  it("shows a red counter once the message nears the 3000 character limit", async () => {
+  it("counts down over the last 500 characters", async () => {
     const input = await renderChatAndWaitForReady();
-    fireEvent.change(input, { target: { value: "a".repeat(2500) } });
-    expect(screen.getByText("2500/3000")).toHaveClass("text-red-500");
+    fireEvent.change(input, { target: { value: "a".repeat(2600) } });
+    expect(screen.getByText("400 left")).toBeInTheDocument();
+  });
+
+  it("turns the count urgent in the final 100 characters", async () => {
+    const input = await renderChatAndWaitForReady();
+    fireEvent.change(input, { target: { value: "a".repeat(2950) } });
+    expect(screen.getByText("50 left")).toHaveClass("text-destructive");
   });
 });
 
@@ -517,11 +535,9 @@ describe("Chat authorization (backend-enforced 403s are handled gracefully)", ()
     });
 
     render(<Chat />);
-    await screen.findByText("Old title");
+    await findRowOption("Old title");
 
-    await user.click(
-      screen.getByRole("button", { name: /rename conversation/i }),
-    );
+    await openRowMenu(user, "Old title", /rename/i);
     const input = screen.getByDisplayValue("Old title");
     await user.clear(input);
     await user.type(input, "Hijacked title{enter}");
@@ -529,7 +545,7 @@ describe("Chat authorization (backend-enforced 403s are handled gracefully)", ()
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Could not rename conversation"),
     );
-    expect(screen.getByText("Old title")).toBeInTheDocument();
+    expect(rowOption("Old title")).toBeInTheDocument();
     expect(screen.queryByText("Hijacked title")).not.toBeInTheDocument();
   });
 
@@ -547,26 +563,26 @@ describe("Chat authorization (backend-enforced 403s are handled gracefully)", ()
     });
 
     render(<Chat />);
-    await screen.findByText("My chat");
+    await findRowOption("My chat");
 
-    await user.click(
-      screen.getByRole("button", { name: /delete conversation/i }),
-    );
+    await openRowMenu(user, "My chat", /delete/i);
     await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Could not delete conversation"),
     );
-    expect(screen.getByText("My chat")).toBeInTheDocument();
+    // The dialog stays open so the delete can be retried, and it holds focus
+    // away from the rail until it is dismissed.
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(rowOption("My chat")).toBeInTheDocument();
     expect(chatAPI.getConversations).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces the backend's 'Not allowed' message and preserves the input when sending is denied (403)", async () => {
     const user = userEvent.setup();
-    vi.mocked(chatAPI.sendMessage).mockRejectedValue({
-      isAxiosError: true,
-      response: { status: 403, data: { message: "Not allowed" } },
-    });
+    vi.mocked(chatAPI.streamMessage).mockRejectedValue(
+      new Error("Not allowed"),
+    );
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "Trying to post into someone else's chat");
@@ -576,8 +592,114 @@ describe("Chat authorization (backend-enforced 403s are handled gracefully)", ()
       expect(toast.error).toHaveBeenCalledWith("Not allowed"),
     );
     expect(
-      screen.queryByText("Trying to post into someone else's chat"),
-    ).not.toBeInTheDocument();
+      transcript().queryByText("Trying to post into someone else's chat"),
+    ).toBeNull();
     expect(input).toHaveValue("Trying to post into someone else's chat");
+  });
+});
+
+describe("Chat streaming", () => {
+  it("appends chunks to the assistant bubble as they arrive", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const midStream = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    vi.mocked(chatAPI.streamMessage).mockImplementation(
+      async (_id, _message, _attachments, handlers) => {
+        handlers.onStart?.("gemini");
+        handlers.onDelta("This appears ");
+        await midStream;
+        handlers.onDelta("to be bacteria.");
+        return {
+          messageId: "user-msg-1",
+          assistantMessageId: "assistant-msg-1",
+          type: "normal" as const,
+        };
+      },
+    );
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "What is this?");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    // Visible before the answer is finished.
+    expect(await screen.findByText("This appears")).toBeInTheDocument();
+
+    release();
+
+    expect(
+      await screen.findByText("This appears to be bacteria."),
+    ).toBeInTheDocument();
+  });
+
+  it("removes the assistant placeholder when the stream fails before any text", async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatAPI.streamMessage).mockImplementation(async () => {
+      throw new Error(
+        "Our AI assistant is temporarily unavailable. Please try again shortly.",
+      );
+    });
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "I have a sore throat");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Our AI assistant is temporarily unavailable. Please try again shortly.",
+      ),
+    );
+    // No empty assistant bubble is left behind, and the message can be retried.
+    expect(transcript().queryByText("I have a sore throat")).toBeNull();
+    // Back to the empty state: no half-written assistant bubble survives.
+    expect(screen.getByText(/start with how you feel/i)).toBeInTheDocument();
+    expect(input).toHaveValue("I have a sore throat");
+    expect(input).not.toBeDisabled();
+  });
+
+  it("drops a partly streamed answer when the stream is interrupted", async () => {
+    const user = userEvent.setup();
+    vi.mocked(chatAPI.streamMessage).mockImplementation(
+      async (_id, _message, _attachments, handlers) => {
+        handlers.onStart?.("gemini");
+        handlers.onDelta("This appears to be ");
+        // Nothing was persisted server-side, so nothing survives here either.
+        throw new Error(
+          "The answer was cut off before it finished. Please ask again.",
+        );
+      },
+    );
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "What is this?");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "The answer was cut off before it finished. Please ask again.",
+      ),
+    );
+    expect(transcript().queryByText(/this appears to be/i)).toBeNull();
+    expect(input).toHaveValue("What is this?");
+  });
+
+  it("sends ready attachment ids with the streaming request", async () => {
+    const user = userEvent.setup();
+    mockStream("Looks like an ordinary rash.");
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "see attached");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(chatAPI.streamMessage).toHaveBeenCalledWith(
+        "conv-1",
+        "see attached",
+        undefined,
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
   });
 });

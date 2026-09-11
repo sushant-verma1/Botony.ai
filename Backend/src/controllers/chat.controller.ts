@@ -4,8 +4,17 @@ import {
   detectEmergency,
   getEmergencyResponse,
 } from "../utils/safety.util.js";
-import { generateResponse, AIServiceError } from "../services/ai/index.js";
-import type { AIMessage, AIAttachmentContent } from "../services/ai/index.js";
+import {
+  streamResponse,
+  AIServiceError,
+  AIStreamInterruptedError,
+} from "../services/ai/index.js";
+import type {
+  AIMessage,
+  AIAttachmentContent,
+  AIStreamEvent,
+} from "../services/ai/index.js";
+import { openEventStream, sendEvent } from "../utils/sse.util.js";
 import {
   validateAttachmentsForMessage,
   bindAttachmentsToMessage,
@@ -247,12 +256,18 @@ export const messageController = async (
     logger.info("Emergency response sent", {
       conversationId,
     });
-    return res.json({
+
+    // Sent over the same SSE contract as a model answer so the client has a
+    // single path. The text is canned, so it is one delta.
+    openEventStream(res);
+    sendEvent(res, "start", { provider: "safety" });
+    sendEvent(res, "delta", { text: result.emergencyResponse });
+    sendEvent(res, "done", {
       messageId: result.userMessage.id,
       assistantMessageId: result.assistantMessage.id,
       type: "emergency",
-      response: result.emergencyResponse,
     });
+    return res.end();
   }
 
   try {
@@ -334,22 +349,96 @@ export const messageController = async (
       }),
     );
 
-    // Split the handler into "before the AI call" (attachments, history, DB)
-    // / "the AI call" / "after it returns", so a slow reply can be attributed
-    // to the right stage.
-    const aiStartedAt = Date.now();
-    const aiResult = await generateResponse(messagesForClaude, aiAttachments);
-    const aiMs = Date.now() - aiStartedAt;
-    // No blanket disclaimer is appended: the composer carries a permanent one
-    // and the system prompt decides per answer whether a referral is warranted,
-    // so a simple educational question is not buried under a warning block.
-    const claudeResponse = aiResult.text;
+    // The browser can close mid-answer; when it does the provider call is
+    // aborted rather than left generating tokens nobody will read.
+    const abortController = new AbortController();
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        abortController.abort();
+      }
+    });
 
+    // Split the handler into "before the AI call" (attachments, history, DB)
+    // / "the stream" / "persist", so a slow reply can be attributed to the
+    // right stage.
+    const aiStartedAt = Date.now();
+    let finalText = "";
+    let completed: Extract<AIStreamEvent, { type: "done" }> | null = null;
+
+    openEventStream(res);
+
+    try {
+      for await (const event of streamResponse(
+        messagesForClaude,
+        aiAttachments,
+        abortController.signal,
+      )) {
+        if (event.type === "start") {
+          sendEvent(res, "start", { provider: event.provider });
+        } else if (event.type === "delta") {
+          sendEvent(res, "delta", { text: event.text });
+        } else {
+          // Assembled in memory across the whole stream — nothing is written
+          // to the database until the provider has finished.
+          finalText = event.text;
+          completed = event;
+        }
+      }
+    } catch (error) {
+      // Only a code and a vetted sentence cross the wire: never the provider
+      // message, the prompt, a URL or a stack.
+      if (error instanceof AIStreamInterruptedError) {
+        logger.error("AI stream interrupted after visible output", {
+          conversationId,
+          userId: req.user.userId,
+          provider: error.provider,
+          originalMessage: error.originalMessage,
+        });
+        sendEvent(res, "error", {
+          code: "AI_INTERRUPTED",
+          message: error.userMessage,
+        });
+        return res.end();
+      }
+
+      if (error instanceof AIServiceError) {
+        logger.error("AI service unavailable", {
+          originalMessage: error.originalMessage,
+          conversationId,
+          userId: req.user.userId,
+        });
+        sendEvent(res, "error", {
+          code: "AI_UNAVAILABLE",
+          message: error.userMessage,
+        });
+        return res.end();
+      }
+
+      throw error;
+    }
+
+    const aiMs = Date.now() - aiStartedAt;
+
+    if (!completed) {
+      // The client disconnected. A half-finished answer is not part of the
+      // record, so nothing is persisted.
+      logger.info("Message stream ended without completing", {
+        conversationId,
+        userId: req.user.userId,
+        aiMs,
+      });
+      return res.end();
+    }
+
+    // No blanket disclaimer is appended: the composer carries a permanent one
+    // and the system prompt decides per answer whether a referral is
+    // warranted, so a simple educational question is not buried under a
+    // warning block.
     const persistStartedAt = Date.now();
     const assistantMessage = await prisma.message.create({
       data: {
         conversationId,
-        content: claudeResponse,
+        content: finalText,
         role: "assistant",
         userId: req.user.userId,
         emergencyDetected: false,
@@ -359,24 +448,42 @@ export const messageController = async (
 
     logger.info("Message handled", {
       conversationId,
-      provider: aiResult.provider,
-      model: aiResult.model,
+      provider: completed.provider,
+      model: completed.model,
       beforeAiMs: aiStartedAt - handlerStartedAt,
       aiMs,
+      firstChunkMs: completed.firstChunkMs,
+      chunks: completed.chunks,
+      outputChars: finalText.length,
+      retries: completed.retries,
       persistMs,
       totalMs: Date.now() - handlerStartedAt,
       attachmentCount: aiAttachments.length,
-      inputTokens: aiResult.usage?.inputTokens,
-      outputTokens: aiResult.usage?.outputTokens,
     });
 
-    return res.json({
+    sendEvent(res, "done", {
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
       type: "normal",
-      response: claudeResponse,
     });
+    return res.end();
   } catch (error: any) {
+    // Past the point where the SSE headers went out there is no status code
+    // left to send, so failures finish the stream instead.
+    if (res.headersSent) {
+      logger.error("Message stream failed after headers were sent", {
+        conversationId,
+        userId: req.user.userId,
+        message: error?.message,
+      });
+      sendEvent(res, "error", {
+        code: "AI_UNAVAILABLE",
+        message:
+          "Something went wrong while answering. Please try again shortly.",
+      });
+      return res.end();
+    }
+
     if (error instanceof AttachmentError) {
       logger.warn("Attachment processing failed for message", {
         conversationId,

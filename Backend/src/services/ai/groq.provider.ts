@@ -3,7 +3,7 @@ import { groqApiKey, groqModel } from "../../config/config.js";
 import logger from "../logger.js";
 import { inlineImage } from "./image.js";
 import { MEDICAL_SYSTEM_PROMPT } from "./prompt.js";
-import { splitReasoning } from "./reasoning.js";
+import { createReasoningFilter, splitReasoning } from "./reasoning.js";
 import type { AIAttachmentContent, AIMessage, AIResponse } from "./types.js";
 import { AIProviderError } from "./types.js";
 
@@ -223,4 +223,137 @@ async function generateWithGroq(
   }
 }
 
-export { generateWithGroq };
+/**
+ * Streaming twin of generateWithGroq: same model, same reasoning_effort
+ * "none", same image inlining. Only `delta.content` is yielded — `reasoning`
+ * is read solely so it can be counted, never forwarded.
+ */
+async function* streamWithGroq(
+  messages: AIMessage[],
+  attachments: AIAttachmentContent[] = [],
+  signal?: AbortSignal,
+): AsyncGenerator<string> {
+  const startedAt = Date.now();
+  const imageCount = attachments.filter((a) => a.type === "image").length;
+  const filter = createReasoningFilter();
+  let chunks = 0;
+  let visibleChars = 0;
+  let reasoningChars = 0;
+  let firstChunkMs: number | undefined;
+  let finishReason: string | undefined;
+
+  try {
+    logger.info("Calling Groq streaming API", {
+      model: groqModel,
+      messageCount: messages.length,
+      imageCount,
+      documentCount: attachments.filter((a) => a.type === "text").length,
+    });
+
+    const prepStartedAt = Date.now();
+    const chatMessages = await toChatMessages(messages, attachments);
+    const prepMs = Date.now() - prepStartedAt;
+
+    // Same non-thinking configuration as the non-streaming call; see the
+    // comment in generateWithGroq for why reasoning_effort is "none".
+    const params = {
+      model: groqModel,
+      max_tokens: 1000,
+      messages: chatMessages,
+      reasoning_effort: "none",
+      stream: true,
+    };
+    const stream = await client.chat.completions.create(
+      params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+      { signal },
+    );
+
+    for await (const chunk of stream) {
+      const choice = chunk.choices[0];
+      const delta = choice?.delta as
+        | { content?: string | null; reasoning?: string | null }
+        | undefined;
+
+      finishReason = choice?.finish_reason ?? finishReason;
+      reasoningChars += delta?.reasoning?.length ?? 0;
+
+      const text = filter.push(delta?.content ?? "");
+      if (!text) continue;
+
+      chunks += 1;
+      visibleChars += text.length;
+      firstChunkMs ??= Date.now() - startedAt;
+      yield text;
+    }
+
+    const tail = filter.flush();
+    if (tail) {
+      chunks += 1;
+      visibleChars += tail.length;
+      firstChunkMs ??= Date.now() - startedAt;
+      yield tail;
+    }
+
+    if (filter.inlineBlocksStripped > 0) {
+      logger.warn("Stripped inline reasoning from a Groq stream", {
+        model: groqModel,
+        inlineBlocksStripped: filter.inlineBlocksStripped,
+      });
+    }
+
+    if (visibleChars === 0) {
+      throw new AIProviderError(
+        "No text content in Groq stream",
+        "groq",
+        false,
+      );
+    }
+
+    // Counts and timings only — reasoning is counted, never logged or sent.
+    logger.info("Groq stream completed", {
+      model: groqModel,
+      prepMs,
+      firstChunkMs,
+      totalMs: Date.now() - startedAt,
+      chunks,
+      visibleChars,
+      reasoningChars,
+      hasImage: imageCount > 0,
+      finishReason,
+    });
+  } catch (error) {
+    if (error instanceof AIProviderError) {
+      throw error;
+    }
+
+    if (error instanceof OpenAI.APIError) {
+      logger.error("Groq streaming API error", {
+        model: groqModel,
+        status: error.status,
+        message: error.message,
+        chunksBeforeFailure: chunks,
+        failedAfterMs: Date.now() - startedAt,
+      });
+      throw new AIProviderError(
+        error.message,
+        "groq",
+        isRetryableStatus(error.status),
+        error.status,
+      );
+    }
+
+    logger.error("Groq stream failed", {
+      model: groqModel,
+      message: error instanceof Error ? error.message : "Unknown error",
+      chunksBeforeFailure: chunks,
+      failedAfterMs: Date.now() - startedAt,
+    });
+    throw new AIProviderError(
+      error instanceof Error ? error.message : "Unknown Groq error",
+      "groq",
+      true,
+    );
+  }
+}
+
+export { generateWithGroq, streamWithGroq };

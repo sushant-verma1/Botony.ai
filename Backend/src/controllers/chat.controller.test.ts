@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
-import { createMockRes } from "../test/mockExpress.js";
+import {
+  createMockRes,
+  emitClose,
+  lastSseFrame,
+  sseBody,
+  sseFrames,
+} from "../test/mockExpress.js";
 
 vi.mock("../services/logger.js", () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -24,14 +30,14 @@ vi.mock("../config/db.js", () => ({
   },
 }));
 
-const { mockGenerateResponse } = vi.hoisted(() => ({
-  mockGenerateResponse: vi.fn(),
+const { mockStreamResponse } = vi.hoisted(() => ({
+  mockStreamResponse: vi.fn(),
 }));
 
 vi.mock("../services/ai/index.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../services/ai/index.js")>();
-  return { ...actual, generateResponse: mockGenerateResponse };
+  return { ...actual, streamResponse: mockStreamResponse };
 });
 
 const {
@@ -53,7 +59,10 @@ vi.mock("../services/attachment.service.js", async (importOriginal) => {
 });
 
 import { prisma } from "../config/db.js";
-import { AIServiceError } from "../services/ai/index.js";
+import {
+  AIServiceError,
+  AIStreamInterruptedError,
+} from "../services/ai/index.js";
 import { AttachmentError } from "../services/attachment.service.js";
 import {
   newChatController,
@@ -63,6 +72,38 @@ import {
   messageController,
   getHistoryController,
 } from "./chat.controller.js";
+
+// Replays a finished answer as the event sequence streamResponse emits.
+// `extra` is spread into the done event so a test can simulate a provider
+// leaking a field the controller must not forward.
+function aiStream(text: string, extra: Record<string, unknown> = {}) {
+  return (async function* () {
+    yield { type: "start", provider: "groq", model: "qwen/qwen3.6-27b" };
+    for (const part of text.match(/[\s\S]{1,8}/g) ?? []) {
+      yield { type: "delta", text: part };
+    }
+    yield {
+      type: "done",
+      text,
+      provider: "groq",
+      model: "qwen/qwen3.6-27b",
+      retries: 0,
+      chunks: 1,
+      firstChunkMs: 1,
+      totalMs: 2,
+      ...extra,
+    };
+  })();
+}
+
+// Fails before the first delta, i.e. before anything is visible to the client.
+function failingStream(error: unknown) {
+  return (async function* () {
+    throw error;
+    // eslint-disable-next-line no-unreachable
+    yield { type: "delta", text: "" };
+  })();
+}
 
 // Loosely typed so a single helper can satisfy every controller's
 // differently-parameterized Express.Request<> signature in this file.
@@ -88,7 +129,7 @@ beforeEach(() => {
   vi.mocked(prisma.$transaction).mockReset();
   vi.mocked(prisma.$transaction).mockImplementation(((cb: any) =>
     cb(prisma)) as never);
-  mockGenerateResponse.mockReset();
+  mockStreamResponse.mockReset();
   mockValidateAttachmentsForMessage.mockReset().mockResolvedValue([]);
   mockBindAttachmentsToMessage.mockReset().mockResolvedValue(undefined);
 });
@@ -323,7 +364,7 @@ describe("messageController", () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith({ message: "Not allowed" });
     expect(prisma.message.create).not.toHaveBeenCalled();
-    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
   });
 
   describe("emergency detection (patient safety)", () => {
@@ -344,7 +385,7 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(mockGenerateResponse).not.toHaveBeenCalled();
+      expect(mockStreamResponse).not.toHaveBeenCalled();
       expect(prisma.message.create).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
@@ -367,13 +408,14 @@ describe("messageController", () => {
         where: { id: "conv-1" },
         data: { status: "emergency" },
       });
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: "emergency",
-          messageId: "user-msg-1",
-          assistantMessageId: "assistant-msg-1",
-        }),
-      );
+      const frames = sseFrames(res);
+      expect(frames.map((f) => f.event)).toEqual(["start", "delta", "done"]);
+      expect(frames[1].data.text).toContain("EMERGENCY");
+      expect(frames[2].data).toEqual({
+        type: "emergency",
+        messageId: "user-msg-1",
+        assistantMessageId: "assistant-msg-1",
+      });
     });
   });
 
@@ -396,7 +438,9 @@ describe("messageController", () => {
           content: `message ${i}`,
         })) as never,
       );
-      mockGenerateResponse.mockResolvedValue({ text: "Here is some health info.", provider: "groq", model: "meta-llama/llama-4-scout-17b-16e-instruct" });
+      mockStreamResponse.mockImplementation(() =>
+        aiStream("Here is some health info."),
+      );
     }
 
     it("returns the AI answer unchanged, with no blanket disclaimer", async () => {
@@ -410,17 +454,27 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(mockGenerateResponse).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
+      expect(mockStreamResponse).toHaveBeenCalled();
+
+      const frames = sseFrames(res);
+      const streamed = frames
+        .filter((f) => f.event === "delta")
+        .map((f) => f.data.text)
+        .join("");
+      expect(streamed).toBe("Here is some health info.");
+      expect(frames[frames.length - 1]).toEqual({
+        event: "done",
+        data: {
           type: "normal",
-          response: expect.stringContaining("Here is some health info."),
-        }),
-      );
-      const jsonArg = vi.mocked(res.json).mock.calls[0][0] as {
-        response: string;
-      };
-      expect(jsonArg.response).toBe("Here is some health info.");
+          messageId: "user-msg-1",
+          assistantMessageId: "assistant-msg-1",
+        },
+      });
+
+      // The assistant row is written once, with the assembled text.
+      const assistantWrite = vi.mocked(prisma.message.create).mock.calls[1][0]
+        .data as { content: string };
+      expect(assistantWrite.content).toBe("Here is some health info.");
     });
 
     it("flips conversation status from 'emergency' back to 'ongoing'", async () => {
@@ -512,7 +566,9 @@ describe("messageController", () => {
       vi.mocked(prisma.message.findMany).mockResolvedValue([
         { role: "user", content: "message 0" },
       ] as never);
-      mockGenerateResponse.mockResolvedValue(aiResult);
+      mockStreamResponse.mockImplementation(() =>
+        aiStream(aiResult.text as string, { reasoning: aiResult.reasoning }),
+      );
     }
 
     it("does not persist reasoning in Message.content or return it", async () => {
@@ -538,11 +594,16 @@ describe("messageController", () => {
       expect(assistantWrite.content).not.toContain(REASONING);
       expect(JSON.stringify(assistantWrite)).not.toContain("Chain of thought");
 
-      // ...and only aiResult.text reaches the client.
-      const body = vi.mocked(res.json).mock.calls[0][0] as Record<string, unknown>;
-      expect(body.response).toBe(ANSWER);
-      expect(JSON.stringify(body)).not.toContain("Chain of thought");
-      expect(JSON.stringify(body)).not.toContain("reasoning");
+      // ...and only the deltas reach the client: nothing the done event
+      // happened to carry alongside them.
+      const frames = sseFrames(res);
+      const streamed = frames
+        .filter((f) => f.event === "delta")
+        .map((f) => f.data.text)
+        .join("");
+      expect(streamed).toBe(ANSWER);
+      expect(JSON.stringify(frames)).not.toContain("Chain of thought");
+      expect(JSON.stringify(frames)).not.toContain("reasoning");
     });
 
     it("keeps reasoning out of the logs", async () => {
@@ -595,7 +656,7 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(mockGenerateResponse).not.toHaveBeenCalled();
+      expect(mockStreamResponse).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -616,10 +677,12 @@ describe("messageController", () => {
         id: "user-msg-1",
       } as never);
       vi.mocked(prisma.message.findMany).mockResolvedValue([] as never);
-      mockGenerateResponse.mockRejectedValue(
-        new AIServiceError(
-          "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
-          503,
+      mockStreamResponse.mockImplementation(() =>
+        failingStream(
+          new AIServiceError(
+            "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
+            503,
+          ),
         ),
       );
 
@@ -631,11 +694,19 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith({
-        message:
-          "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
-      });
+      // The stream is open by then, so the failure arrives as an error event
+      // carrying the safe message — never the provider's own.
+      expect(sseFrames(res)).toEqual([
+        {
+          event: "error",
+          data: {
+            code: "AI_UNAVAILABLE",
+            message:
+              "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.",
+          },
+        },
+      ]);
+      expect(prisma.message.create).toHaveBeenCalledTimes(1);
     });
 
     it("returns a generic 500 for an unexpected non-AI error", async () => {
@@ -647,7 +718,9 @@ describe("messageController", () => {
         id: "user-msg-1",
       } as never);
       vi.mocked(prisma.message.findMany).mockResolvedValue([] as never);
-      mockGenerateResponse.mockRejectedValue(new Error("Unexpected"));
+      mockStreamResponse.mockImplementation(() =>
+        failingStream(new Error("Unexpected")),
+      );
 
       const req = buildReq({
         params: { chatid: "conv-1" },
@@ -657,10 +730,11 @@ describe("messageController", () => {
 
       await messageController(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({ message: "Failed to generate response" }),
-      );
+      const frames = sseFrames(res);
+      expect(frames).toHaveLength(1);
+      expect(frames[0].event).toBe("error");
+      expect(frames[0].data.code).toBe("AI_UNAVAILABLE");
+      expect(JSON.stringify(frames)).not.toContain("Unexpected");
     });
   });
 });
@@ -677,11 +751,9 @@ describe("messageController attachments", () => {
     vi.mocked(prisma.message.findMany).mockResolvedValue([
       { role: "user", content: "message 0" },
     ] as never);
-    mockGenerateResponse.mockResolvedValue({
-      text: "Here is some health info.",
-      provider: "groq",
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-    });
+    mockStreamResponse.mockImplementation(() =>
+      aiStream("Here is some health info."),
+    );
   }
 
   it("rejects the message when attachment validation fails, without calling the AI", async () => {
@@ -706,7 +778,7 @@ describe("messageController attachments", () => {
     expect(res.json).toHaveBeenCalledWith({
       message: "One or more attachments were not found",
     });
-    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
     expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
@@ -738,8 +810,11 @@ describe("messageController attachments", () => {
       ["att-1"],
       "user-msg-1",
     );
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "normal" }),
+    expect(lastSseFrame(res)).toEqual(
+      expect.objectContaining({
+        event: "done",
+        data: expect.objectContaining({ type: "normal" }),
+      }),
     );
   });
 });
@@ -897,7 +972,7 @@ describe("Cross-user data isolation (IDOR protection)", () => {
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith({ message: "Not allowed" });
     expect(prisma.message.create).not.toHaveBeenCalled();
-    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
   });
 
   it("blocks another user from reading someone else's conversation history", async () => {
@@ -952,11 +1027,9 @@ describe("messageController attachment hardening", () => {
     vi.mocked(prisma.message.findMany).mockResolvedValue([
       { role: "user", content: "message 0" },
     ] as never);
-    mockGenerateResponse.mockResolvedValue({
-      text: "Here is some health info.",
-      provider: "groq",
-      model: "meta-llama/llama-4-scout-17b-16e-instruct",
-    });
+    mockStreamResponse.mockImplementation(() =>
+      aiStream("Here is some health info."),
+    );
   }
 
   it("refuses a message referencing an attachment that is not READY", async () => {
@@ -979,7 +1052,7 @@ describe("messageController attachment hardening", () => {
     await messageController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
     expect(prisma.message.create).not.toHaveBeenCalled();
   });
 
@@ -1010,7 +1083,7 @@ describe("messageController attachment hardening", () => {
     await messageController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(409);
-    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
   });
 
   it("still delivers the emergency response when binding fails", async () => {
@@ -1042,9 +1115,153 @@ describe("messageController attachment hardening", () => {
 
     await messageController(req, res);
 
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "emergency" }),
+    expect(lastSseFrame(res)).toEqual(
+      expect.objectContaining({
+        event: "done",
+        data: expect.objectContaining({ type: "emergency" }),
+      }),
     );
-    expect(mockGenerateResponse).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
+  });
+});
+
+describe("messageController streaming", () => {
+  function mockStreamingFlow() {
+    vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+      userId: "user-1",
+      status: "ongoing",
+    } as never);
+    vi.mocked(prisma.message.create)
+      .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+      .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { role: "user", content: "message 0" },
+    ] as never);
+  }
+
+  function buildMessageReq() {
+    return buildReq({
+      params: { chatid: "conv-1" },
+      body: { content: "I have a mild headache" },
+    } as never);
+  }
+
+  it("answers as an event stream, not JSON", async () => {
+    mockStreamingFlow();
+    mockStreamResponse.mockImplementation(() => aiStream("Some health info."));
+    const res = createMockRes();
+
+    await messageController(buildMessageReq(), res);
+
+    expect(res.setHeader).toHaveBeenCalledWith(
+      "Content-Type",
+      "text/event-stream; charset=utf-8",
+    );
+    expect(res.setHeader).toHaveBeenCalledWith(
+      "Cache-Control",
+      "no-cache, no-transform",
+    );
+    expect(res.setHeader).toHaveBeenCalledWith("Connection", "keep-alive");
+    expect(res.json).not.toHaveBeenCalled();
+    expect(res.end).toHaveBeenCalled();
+  });
+
+  it("formats every frame as `event: <name>` + one JSON `data:` line", async () => {
+    mockStreamingFlow();
+    // A newline in the answer must not be readable as a frame boundary.
+    mockStreamResponse.mockImplementation(() => aiStream("line one\n\nline two"));
+    const res = createMockRes();
+
+    await messageController(buildMessageReq(), res);
+
+    const body = sseBody(res);
+    expect(body.startsWith('event: start\ndata: {"provider":"groq"}\n\n')).toBe(
+      true,
+    );
+    for (const frame of body.split("\n\n").filter(Boolean)) {
+      const [eventLine, dataLine, ...rest] = frame.split("\n");
+      expect(eventLine).toMatch(/^event: (start|delta|done)$/);
+      expect(dataLine).toMatch(/^data: \{/);
+      expect(rest).toEqual([]);
+      expect(() => JSON.parse(dataLine.slice("data: ".length))).not.toThrow();
+    }
+
+    const streamed = sseFrames(res)
+      .filter((f) => f.event === "delta")
+      .map((f) => f.data.text)
+      .join("");
+    expect(streamed).toBe("line one\n\nline two");
+  });
+
+  it("persists the assembled answer once, after the stream completes", async () => {
+    mockStreamingFlow();
+    mockStreamResponse.mockImplementation(() =>
+      aiStream("A headache like that is usually tension."),
+    );
+    const res = createMockRes();
+
+    await messageController(buildMessageReq(), res);
+
+    // One user row, one assistant row — never one write per delta.
+    expect(prisma.message.create).toHaveBeenCalledTimes(2);
+    const assistantWrite = vi.mocked(prisma.message.create).mock.calls[1][0]
+      .data as { content: string; role: string };
+    expect(assistantWrite.role).toBe("assistant");
+    expect(assistantWrite.content).toBe(
+      "A headache like that is usually tension.",
+    );
+    expect(lastSseFrame(res)!.data.assistantMessageId).toBe(
+      "assistant-msg-1",
+    );
+  });
+
+  it("persists nothing when the stream is interrupted after visible output", async () => {
+    mockStreamingFlow();
+    mockStreamResponse.mockImplementation(() =>
+      (async function* () {
+        yield { type: "start", provider: "gemini", model: "gemini-3.6-flash" };
+        yield { type: "delta", text: "This appears to be " };
+        throw new AIStreamInterruptedError(
+          "The answer was cut off before it finished. Please ask again.",
+          "gemini",
+          new Error("connection reset"),
+        );
+      })(),
+    );
+    const res = createMockRes();
+
+    await messageController(buildMessageReq(), res);
+
+    // Only the user message was written; no partial assistant row.
+    expect(prisma.message.create).toHaveBeenCalledTimes(1);
+    const frames = sseFrames(res);
+    expect(frames[frames.length - 1]!.event).toBe("error");
+    expect(frames[frames.length - 1]!.data.code).toBe("AI_INTERRUPTED");
+    expect(JSON.stringify(frames)).not.toContain("connection reset");
+  });
+
+  it("aborts the provider stream when the client disconnects, and persists nothing", async () => {
+    mockStreamingFlow();
+    const res = createMockRes();
+    let abortedDuringStream = false;
+
+    mockStreamResponse.mockImplementation(
+      (_messages: unknown, _attachments: unknown, signal: AbortSignal) =>
+        (async function* () {
+          yield { type: "start", provider: "gemini", model: "gemini-3.6-flash" };
+          yield { type: "delta", text: "partial" };
+          // The browser goes away mid-answer.
+          emitClose(res);
+          abortedDuringStream = signal.aborted;
+          // A real provider stream ends here rather than generating on.
+        })(),
+    );
+
+    await messageController(buildMessageReq(), res);
+
+    expect(abortedDuringStream).toBe(true);
+    expect(prisma.message.create).toHaveBeenCalledTimes(1);
+    expect(sseFrames(res).some((f) => f.event === "done")).toBe(false);
+    expect(res.end).toHaveBeenCalled();
   });
 });

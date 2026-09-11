@@ -1,4 +1,13 @@
 import Spinner from "./Spinner";
+import { Button } from "./ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 interface ConfirmDialogProps {
   title: string;
@@ -10,6 +19,11 @@ interface ConfirmDialogProps {
   danger?: boolean;
 }
 
+/** Rendered by its caller only while the question is open, which is why the
+ *  dialog is held open here: dismissing it — Escape, the backdrop, Cancel —
+ *  is the same answer, so all three land on onCancel and the caller unmounts
+ *  it. No close affordance beyond that; a confirmation wants a choice, not an
+ *  escape hatch dressed as one. */
 export default function ConfirmDialog({
   title,
   message,
@@ -20,32 +34,42 @@ export default function ConfirmDialog({
   danger = true,
 }: ConfirmDialogProps) {
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
-      <div className="bg-white rounded-xl shadow-lg p-6 w-full max-w-sm">
-        <h2 className="text-lg font-semibold text-gray-800 mb-2">{title}</h2>
-        <p className="text-sm text-gray-500 mb-6">{message}</p>
-        <div className="flex justify-end gap-3">
-          <button
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !loading) onCancel();
+      }}
+    >
+      <DialogContent showCloseButton={false} className="gap-5 p-5 sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-[17px] tracking-[-0.012em]">
+            {title}
+          </DialogTitle>
+          <DialogDescription className="leading-relaxed">
+            {message}
+          </DialogDescription>
+        </DialogHeader>
+
+        <DialogFooter className="-mx-5 -mb-5 gap-2 p-4">
+          <Button
+            variant="ghost"
             onClick={onCancel}
             disabled={loading}
-            className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800 disabled:opacity-50"
+            className="h-9 rounded-full px-4"
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            variant={danger ? "destructive" : "default"}
             onClick={onConfirm}
             disabled={loading}
-            className={`px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 flex items-center gap-2 ${
-              danger
-                ? "bg-red-600 hover:bg-red-700"
-                : "bg-blue-600 hover:bg-blue-700"
-            }`}
+            className="h-9 rounded-full px-4"
           >
-            {loading && <Spinner className="h-3.5 w-3.5" />}
+            {loading && <Spinner className="size-3.5" />}
             {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

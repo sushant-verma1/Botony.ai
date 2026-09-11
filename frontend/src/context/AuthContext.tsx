@@ -64,6 +64,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setUser(data.user);
   };
 
+  const updateProfile = async (name: string) => {
+    const { data } = await authAPI.updateProfile(name);
+
+    setUser(data.user);
+  };
+
   const logout = async () => {
     try {
       await authAPI.logout();
@@ -81,6 +87,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     loading,
     login,
     logout,
+    updateProfile,
   };
 
   return (

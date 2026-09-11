@@ -1,0 +1,236 @@
+/* ------------------------------------------------------------------------
+   The chat surface.
+
+   shadcn/ui's components are the mechanism; the rules below are the Botony
+   world they wear. The landing page's system is three colours and a hairline
+   — ink on paper, chrome on surface, 1px of --line wherever two things meet,
+   and nothing elevated or tinted. That translates to this screen as one
+   decision applied everywhere:
+
+     paper   = what Botony says. Open prose, no container.
+     surface = what you said, and everything that is chrome. A plate.
+
+   So the rail, the composer field and every message of yours share one tone,
+   the answers sit on the page itself, and the only filled block in the whole
+   product is an emergency. Scoped to .chat, so the auth forms and the landing
+   keep the registry's own tokens untouched.
+   --------------------------------------------------------------------- */
+
+.chat {
+  --background: var(--paper);
+  --foreground: var(--ink);
+
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+
+  /* The pill from .button--solid, reached through shadcn's default button. */
+  --primary: var(--ink);
+  --primary-foreground: var(--surface);
+
+  --secondary: var(--surface);
+  --secondary-foreground: var(--ink);
+
+  --muted: var(--surface);
+  /* The landing sets secondary text with opacity: 0.68. Mixed rather than
+     faded, because this text sits on two different grounds and an alpha that
+     reads at 4.5:1 on paper does not on the rail. 62% of ink clears it on
+     both. */
+  --muted-foreground: color-mix(in oklab, var(--ink) 62%, var(--surface));
+
+  --accent: color-mix(in oklab, var(--ink) 5%, var(--paper));
+  --accent-foreground: var(--ink);
+
+  /* Darker than the registry's default red, which is a 3.9:1 on paper. */
+  --destructive: #b0241b;
+
+  --border: var(--line);
+  --input: var(--line);
+  /* Deliberately quiet: index.css already gives :focus-visible a 2px ink
+     outline site-wide, and a second bright halo around it reads as a bug. */
+  --ring: color-mix(in oklab, var(--ink) 22%, var(--surface));
+
+  --radius: 0.75rem;
+
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--ink);
+  --sidebar-primary-foreground: var(--surface);
+  --sidebar-accent: color-mix(in oklab, var(--ink) 5%, var(--surface));
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--line);
+  --sidebar-ring: color-mix(in oklab, var(--ink) 22%, var(--surface));
+
+  /* The one saturated thing on the screen, and it appears exactly once: on
+     the icon inside an emergency block, where it is read against ink. */
+  --alarm: #ff5a4d;
+
+  color: var(--ink);
+  caret-color: var(--ink);
+}
+
+/* The parts nobody draws still carry the design. */
+.chat ::selection {
+  background: color-mix(in oklab, var(--ink) 13%, transparent);
+  color: var(--ink);
+}
+
+.chat *,
+.chat *::before,
+.chat *::after {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--ink) 20%, transparent) transparent;
+}
+
+.chat ::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+.chat ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* The transparent border plus background-clip is what makes the thumb a
+   hairline-thin capsule with air either side rather than a full-width slab. */
+.chat ::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--ink) 20%, transparent);
+  background-clip: content-box;
+  border: 3.5px solid transparent;
+  border-radius: 999px;
+}
+
+.chat ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--ink) 36%, transparent);
+  background-clip: content-box;
+}
+
+/* ---- micro-labels ------------------------------------------------------ */
+
+/* The landing's .eyebrow, raised from opacity 0.45 to a mixed ink that holds
+   4.5:1. Marketing type can be a whisper; a label on a control cannot. */
+.chat-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* ---- the transcript ---------------------------------------------------- */
+
+/* Answers are set as prose at a reading measure, not inside a bubble. The
+   landing's safety list makes the same move — "a rule per line, no bullets" —
+   and for the same reason: a series of statements, not a feed of objects. */
+.chat-prose {
+  font-size: 0.975rem;
+  line-height: 1.72;
+  letter-spacing: -0.006em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.chat[data-text-size="large"] .chat-prose {
+  font-size: 1.125rem;
+  line-height: 1.68;
+}
+
+/* The one authored moment. Exponential ease-out from off-screen, reaching
+   past transform and opacity so an answer resolves rather than slides. Keyed
+   on the message id, so it plays once per turn and never re-runs while the
+   answer is still streaming into it. */
+@keyframes chat-turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(9px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
+
+.chat-turn {
+  animation: chat-turn-in 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Waiting. The mark's own pupils drift, one after the other, which is the
+   character on the landing page glancing about while it thinks — the same
+   gesture as IDLE.lookStep, at the size of a full stop. */
+@keyframes chat-glance {
+  0%,
+  100% {
+    opacity: 0.26;
+  }
+  45% {
+    opacity: 1;
+  }
+}
+
+.chat-waiting circle {
+  animation: chat-glance 1500ms ease-in-out infinite;
+}
+
+.chat-waiting circle:nth-of-type(2) {
+  animation-delay: 240ms;
+}
+
+.chat-waiting rect {
+  opacity: 0.26;
+}
+
+/* The transcript dissolves into the composer rather than being cut by it.
+   Purely scenery: every click belongs to the message underneath. */
+.chat-hem {
+  background: linear-gradient(to top, var(--paper), transparent);
+}
+
+/* ---- composer ---------------------------------------------------------- */
+
+/* The composer is one control, not three in a box. index.css gives every
+   :focus-visible an ink outline site-wide, and on the field inside the frame
+   that draws a second rectangle three pixels in from the first — so the frame
+   takes the focus and the field gives its ring up. The border it moves to
+   clears 3:1 against both the field and the page, which is what makes it a
+   focus indicator rather than a mood. */
+.chat-composer:focus-within {
+  border-color: color-mix(in oklab, var(--ink) 45%, var(--surface));
+}
+
+.chat-composer textarea:focus-visible {
+  outline: none;
+}
+
+/* ---- conversation rail ------------------------------------------------- */
+
+/* Selected reads as "lifted onto the paper", which is the same two-tone rule
+   the transcript runs on. Not a tint, and not a thick coloured edge. */
+.chat-conv[data-active] {
+  background: var(--paper);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.chat-conv[data-active]:hover {
+  background: var(--paper);
+}
+
+/* Counters and byte sizes stop jittering as they count. */
+.chat-figure {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-turn {
+    animation: none;
+  }
+
+  .chat-waiting circle,
+  .chat-waiting rect {
+    animation: none;
+    opacity: 1;
+  }
+}

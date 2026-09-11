@@ -4,18 +4,22 @@ vi.mock("../logger.js", () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { mockGenerateContent } = vi.hoisted(() => ({
+const { mockGenerateContent, mockGenerateContentStream } = vi.hoisted(() => ({
   mockGenerateContent: vi.fn(),
+  mockGenerateContentStream: vi.fn(),
 }));
 
 vi.mock("@google/genai", () => {
   function GoogleGenAI(this: Record<string, unknown>) {
-    this.models = { generateContent: mockGenerateContent };
+    this.models = {
+      generateContent: mockGenerateContent,
+      generateContentStream: mockGenerateContentStream,
+    };
   }
   return { GoogleGenAI, ThinkingLevel: { MINIMAL: "MINIMAL" } };
 });
 
-import { generateWithGemini } from "./gemini.provider.js";
+import { generateWithGemini, streamWithGemini } from "./gemini.provider.js";
 import { AIProviderError } from "./types.js";
 
 const messages = [{ role: "user" as const, content: "I have a rash" }];
@@ -47,6 +51,7 @@ function mockImageFetch(mimeType = "image/jpeg", body = "imagebytes") {
 
 beforeEach(() => {
   mockGenerateContent.mockReset();
+  mockGenerateContentStream.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -130,5 +135,148 @@ describe("generateWithGemini reasoning separation", () => {
     await expect(generateWithGemini(messages)).rejects.toBeInstanceOf(
       AIProviderError,
     );
+  });
+});
+
+// --- streaming ---------------------------------------------------------
+
+interface ChunkPart {
+  text: string;
+  thought?: boolean;
+}
+
+function geminiStream(...chunks: ChunkPart[][]) {
+  return Promise.resolve(
+    (async function* () {
+      for (const parts of chunks) {
+        yield { candidates: [{ content: { parts } }] };
+      }
+    })(),
+  );
+}
+
+async function collect(stream: AsyncGenerator<string>): Promise<string[]> {
+  const out: string[] = [];
+  for await (const delta of stream) out.push(delta);
+  return out;
+}
+
+describe("streamWithGemini", () => {
+  it("yields user-visible text chunk by chunk", async () => {
+    mockGenerateContentStream.mockReturnValue(
+      geminiStream([{ text: "A mild" }], [{ text: " rash" }]),
+    );
+
+    expect(await collect(streamWithGemini(messages))).toEqual([
+      "A mild",
+      " rash",
+    ]);
+
+    const sent = mockGenerateContentStream.mock.calls[0][0];
+    expect(sent.config.maxOutputTokens).toBe(1000);
+    expect(sent.config.thinkingConfig).toEqual({ thinkingLevel: "MINIMAL" });
+  });
+
+  it("never yields thought parts", async () => {
+    mockGenerateContentStream.mockReturnValue(
+      geminiStream(
+        [{ text: REASONING, thought: true }],
+        [{ text: ANSWER }],
+      ),
+    );
+
+    const deltas = await collect(streamWithGemini(messages));
+
+    expect(deltas.join("")).toBe(ANSWER);
+    expect(deltas.join("")).not.toContain(REASONING);
+  });
+
+  it("withholds an inline <think> block even when it is split across chunks", async () => {
+    mockGenerateContentStream.mockReturnValue(
+      geminiStream(
+        [{ text: "Before <thi" }],
+        [{ text: "nk>secret reason" }],
+        [{ text: "ing</think> after" }],
+      ),
+    );
+
+    const text = (await collect(streamWithGemini(messages))).join("");
+
+    expect(text).toBe("Before  after");
+    expect(text).not.toContain("secret");
+  });
+
+  it("inlines an attached image as bytes and keeps its MIME type", async () => {
+    const fetchSpy = mockImageFetch("image/png");
+    mockGenerateContentStream.mockReturnValue(geminiStream([{ text: ANSWER }]));
+
+    await collect(
+      streamWithGemini(messages, [
+        { type: "image", url: "https://signed.example/image" },
+      ]),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith("https://signed.example/image");
+    const parts = mockGenerateContentStream.mock.calls[0][0].contents.at(-1)
+      .parts;
+    expect(parts.at(-1).inlineData.mimeType).toBe("image/png");
+    expect(parts.at(-1).inlineData.data).toBe(
+      Buffer.from("imagebytes").toString("base64"),
+    );
+    // The signed URL itself never reaches the model.
+    expect(JSON.stringify(parts)).not.toContain("signed.example");
+  });
+
+  it("passes extracted document text alongside the question", async () => {
+    mockGenerateContentStream.mockReturnValue(geminiStream([{ text: ANSWER }]));
+
+    await collect(
+      streamWithGemini(messages, [
+        { type: "text", label: "attached document", text: "HbA1c 5.4%" },
+      ]),
+    );
+
+    const parts = mockGenerateContentStream.mock.calls[0][0].contents.at(-1)
+      .parts;
+    expect(parts[0].text).toContain("I have a rash");
+    expect(parts[0].text).toContain("HbA1c 5.4%");
+  });
+
+  it("forwards the abort signal to the SDK", async () => {
+    const controller = new AbortController();
+    mockGenerateContentStream.mockReturnValue(geminiStream([{ text: ANSWER }]));
+
+    await collect(streamWithGemini(messages, [], controller.signal));
+
+    expect(mockGenerateContentStream.mock.calls[0][0].config.abortSignal).toBe(
+      controller.signal,
+    );
+  });
+
+  it("fails non-retryably when the stream carries no visible text", async () => {
+    mockGenerateContentStream.mockReturnValue(
+      geminiStream([{ text: REASONING, thought: true }]),
+    );
+
+    await expect(collect(streamWithGemini(messages))).rejects.toMatchObject({
+      name: "AIProviderError",
+      retryable: false,
+    });
+  });
+
+  it("marks an upstream 503 mid-stream as retryable", async () => {
+    mockGenerateContentStream.mockReturnValue(
+      Promise.resolve(
+        (async function* () {
+          yield { candidates: [{ content: { parts: [{ text: "partial" }] } }] };
+          throw new Error("upstream 503");
+        })(),
+      ),
+    );
+
+    await expect(collect(streamWithGemini(messages))).rejects.toMatchObject({
+      name: "AIProviderError",
+      retryable: true,
+    });
   });
 });

@@ -192,6 +192,7 @@ export async function requestUploadSignature(
 
   const paramsToSign: Record<string, string | number> = {
     public_id: publicId,
+    asset_folder: folder,
     timestamp,
     type: "authenticated",
   };

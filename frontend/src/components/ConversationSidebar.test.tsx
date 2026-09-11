@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ConversationSidebar from "./ConversationSidebar";
+import { SidebarProvider } from "./ui/sidebar";
 import type { ConversationSummary } from "../types/chat";
 
 function buildConversation(
@@ -20,9 +21,13 @@ function buildConversation(
 const noop = () => {};
 const noopAsync = async () => {};
 
-describe("ConversationSidebar", () => {
-  it("renders the empty state when there are no conversations", () => {
-    render(
+/** The rail reads its open/collapsed state off a provider, so every case here
+ *  mounts inside one — the same one Chat wraps the screen in. */
+function renderSidebar(
+  props: Partial<React.ComponentProps<typeof ConversationSidebar>> = {},
+) {
+  return render(
+    <SidebarProvider>
       <ConversationSidebar
         conversations={[]}
         activeConversationId={null}
@@ -32,68 +37,56 @@ describe("ConversationSidebar", () => {
         onRename={noopAsync}
         creatingChat={false}
         disabled={false}
-      />,
-    );
+        {...props}
+      />
+    </SidebarProvider>,
+  );
+}
 
-    expect(screen.getByText(/no conversations yet/i)).toBeInTheDocument();
+/** Rename and delete live behind a per-row options menu, so both start here.
+ *  The popup mounts a tick after the click, so the item is awaited. */
+async function openRowMenu(
+  user: ReturnType<typeof userEvent.setup>,
+  item: RegExp,
+) {
+  await user.click(screen.getByRole("button", { name: /options for/i }));
+  await user.click(await screen.findByRole("menuitem", { name: item }));
+}
+
+describe("ConversationSidebar", () => {
+  it("renders the empty state when there are no conversations", () => {
+    renderSidebar();
+
+    expect(screen.getByText(/nothing here yet/i)).toBeInTheDocument();
   });
 
   it("renders a row for each conversation", () => {
-    render(
-      <ConversationSidebar
-        conversations={[
-          buildConversation({ id: "conv-1", title: "Headache question" }),
-          buildConversation({ id: "conv-2", title: "Fever advice" }),
-        ]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={noopAsync}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({
+      conversations: [
+        buildConversation({ id: "conv-1", title: "Headache question" }),
+        buildConversation({ id: "conv-2", title: "Fever advice" }),
+      ],
+    });
 
     expect(screen.getByText("Headache question")).toBeInTheDocument();
     expect(screen.getByText("Fever advice")).toBeInTheDocument();
   });
 
-  it("falls back to 'New chat' when a conversation has no title", () => {
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ title: null })]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={noopAsync}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+  it("falls back to a placeholder when a conversation has no title", () => {
+    renderSidebar({ conversations: [buildConversation({ title: null })] });
 
-    expect(screen.getByText("New chat")).toBeInTheDocument();
+    // The header button carries the same words, so this asks the row itself.
+    const row = screen.getByRole("listitem");
+    expect(within(row).getByText("New conversation")).toBeInTheDocument();
   });
 
-  it("calls onNewChat when the New Chat button is clicked", async () => {
+  it("calls onNewChat when the new conversation button is clicked", async () => {
     const user = userEvent.setup();
     const onNewChat = vi.fn();
 
-    render(
-      <ConversationSidebar
-        conversations={[]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={onNewChat}
-        onRequestDelete={noop}
-        onRename={noopAsync}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({ onNewChat });
 
-    await user.click(screen.getByRole("button", { name: /new chat/i }));
+    await user.click(screen.getByRole("button", { name: /new conversation/i }));
     expect(onNewChat).toHaveBeenCalledTimes(1);
   });
 
@@ -101,21 +94,25 @@ describe("ConversationSidebar", () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
 
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ id: "conv-42", title: "Cold symptoms" })]}
-        activeConversationId={null}
-        onSelect={onSelect}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={noopAsync}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({
+      conversations: [
+        buildConversation({ id: "conv-42", title: "Cold symptoms" }),
+      ],
+      onSelect,
+    });
 
     await user.click(screen.getByText("Cold symptoms"));
     expect(onSelect).toHaveBeenCalledWith("conv-42");
+  });
+
+  it("marks an emergency conversation for screen readers too", () => {
+    renderSidebar({
+      conversations: [
+        buildConversation({ title: "Chest pain", status: "emergency" }),
+      ],
+    });
+
+    expect(screen.getByText("(emergency)")).toBeInTheDocument();
   });
 });
 
@@ -124,20 +121,13 @@ describe("ConversationSidebar rename and delete", () => {
     const user = userEvent.setup();
     const onRename = vi.fn().mockResolvedValue(undefined);
 
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ id: "conv-1", title: "Old title" })]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={onRename}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({
+      conversations: [buildConversation({ id: "conv-1", title: "Old title" })],
+      onRename,
+    });
 
-    await user.click(screen.getByRole("button", { name: /rename conversation/i }));
+    await openRowMenu(user, /rename/i);
+
     const input = screen.getByDisplayValue("Old title");
     await user.clear(input);
     await user.type(input, "New title{enter}");
@@ -151,24 +141,17 @@ describe("ConversationSidebar rename and delete", () => {
     const user = userEvent.setup();
     const onRename = vi.fn().mockResolvedValue(undefined);
 
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ id: "conv-1", title: "Old title" })]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={onRename}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({
+      conversations: [buildConversation({ id: "conv-1", title: "Old title" })],
+      onRename,
+    });
 
-    await user.click(screen.getByRole("button", { name: /rename conversation/i }));
+    await openRowMenu(user, /rename/i);
+
     const input = screen.getByDisplayValue("Old title");
     await user.clear(input);
     await user.type(input, "Changed but cancelled");
-    await user.keyboard("{Escape}");
+    fireEvent.keyDown(input, { key: "Escape" });
 
     expect(onRename).not.toHaveBeenCalled();
     expect(screen.getByText("Old title")).toBeInTheDocument();
@@ -178,20 +161,13 @@ describe("ConversationSidebar rename and delete", () => {
     const user = userEvent.setup();
     const onRename = vi.fn().mockResolvedValue(undefined);
 
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ id: "conv-1", title: "Old title" })]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={onRename}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({
+      conversations: [buildConversation({ id: "conv-1", title: "Old title" })],
+      onRename,
+    });
 
-    await user.click(screen.getByRole("button", { name: /rename conversation/i }));
+    await openRowMenu(user, /rename/i);
+
     const input = screen.getByDisplayValue("Old title");
     await user.clear(input);
     await user.type(input, "Blurred title");
@@ -207,45 +183,27 @@ describe("ConversationSidebar rename and delete", () => {
     const onRequestDelete = vi.fn();
     const onSelect = vi.fn();
 
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ id: "conv-1", title: "Old title" })]}
-        activeConversationId={null}
-        onSelect={onSelect}
-        onNewChat={noop}
-        onRequestDelete={onRequestDelete}
-        onRename={noopAsync}
-        creatingChat={false}
-        disabled={false}
-      />,
-    );
+    renderSidebar({
+      conversations: [buildConversation({ id: "conv-1", title: "Old title" })],
+      onRequestDelete,
+      onSelect,
+    });
 
-    await user.click(screen.getByRole("button", { name: /delete conversation/i }));
+    await openRowMenu(user, /delete/i);
 
     expect(onRequestDelete).toHaveBeenCalledWith("conv-1");
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("disables select, rename and delete controls when disabled", () => {
-    render(
-      <ConversationSidebar
-        conversations={[buildConversation({ id: "conv-1", title: "Old title" })]}
-        activeConversationId={null}
-        onSelect={noop}
-        onNewChat={noop}
-        onRequestDelete={noop}
-        onRename={noopAsync}
-        creatingChat={false}
-        disabled={true}
-      />,
-    );
+  it("disables the row and its options menu when disabled", () => {
+    renderSidebar({
+      conversations: [buildConversation({ id: "conv-1", title: "Old title" })],
+      disabled: true,
+    });
 
     expect(screen.getByText("Old title").closest("button")).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: /rename conversation/i }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: /delete conversation/i }),
+      screen.getByRole("button", { name: /options for/i }),
     ).toBeDisabled();
   });
 });

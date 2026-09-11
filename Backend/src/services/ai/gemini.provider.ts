@@ -1,10 +1,11 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import type { GenerateContentResponse } from "@google/genai";
 import { geminiApiKey, geminiModel } from "../../config/config.js";
 import logger from "../logger.js";
 import { describeError } from "../../utils/error.util.js";
 import { inlineImage } from "./image.js";
 import { MEDICAL_SYSTEM_PROMPT } from "./prompt.js";
-import { splitReasoning } from "./reasoning.js";
+import { createReasoningFilter, splitReasoning } from "./reasoning.js";
 import type { AIAttachmentContent, AIMessage, AIResponse } from "./types.js";
 import { AIProviderError } from "./types.js";
 
@@ -189,4 +190,130 @@ async function generateWithGemini(
   }
 }
 
-export { generateWithGemini };
+/**
+ * Only parts the patient may see. `part.thought` is Gemini's marker for chain
+ * of thought; includeThoughts is off so these should never arrive, and they
+ * are dropped here anyway rather than trusted not to.
+ */
+function visibleText(chunk: GenerateContentResponse): string {
+  const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .filter((part) => !part.thought && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("");
+}
+
+/**
+ * Streaming twin of generateWithGemini: same model, same config, same image
+ * inlining — it yields user-visible text as it arrives instead of returning
+ * the finished answer. Yields nothing at all if the model produced no visible
+ * text, which the caller treats as a failed attempt.
+ */
+async function* streamWithGemini(
+  messages: AIMessage[],
+  attachments: AIAttachmentContent[] = [],
+  signal?: AbortSignal,
+): AsyncGenerator<string> {
+  const startedAt = Date.now();
+  const filter = createReasoningFilter();
+  let chunks = 0;
+  let visibleChars = 0;
+  let firstChunkMs: number | undefined;
+  let usage: GenerateContentResponse["usageMetadata"];
+  let finishReason: string | undefined;
+
+  try {
+    logger.info("Calling Gemini streaming API", {
+      model: geminiModel,
+      messageCount: messages.length,
+      imageCount: attachments.filter((a) => a.type === "image").length,
+      documentCount: attachments.filter((a) => a.type === "text").length,
+    });
+
+    const prepStartedAt = Date.now();
+    const contents = await toGeminiContents(messages, attachments);
+    const prepMs = Date.now() - prepStartedAt;
+
+    const stream = await ai.models.generateContentStream({
+      model: geminiModel,
+      contents,
+      config: {
+        systemInstruction: MEDICAL_SYSTEM_PROMPT,
+        maxOutputTokens: 1000,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+        abortSignal: signal,
+      },
+    });
+
+    for await (const chunk of stream) {
+      usage = chunk.usageMetadata ?? usage;
+      finishReason = chunk.candidates?.[0]?.finishReason ?? finishReason;
+
+      const text = filter.push(visibleText(chunk));
+      if (!text) continue;
+
+      chunks += 1;
+      visibleChars += text.length;
+      firstChunkMs ??= Date.now() - startedAt;
+      yield text;
+    }
+
+    const tail = filter.flush();
+    if (tail) {
+      chunks += 1;
+      visibleChars += tail.length;
+      firstChunkMs ??= Date.now() - startedAt;
+      yield tail;
+    }
+
+    if (filter.inlineBlocksStripped > 0) {
+      logger.warn("Stripped inline reasoning from a Gemini stream", {
+        model: geminiModel,
+        inlineBlocksStripped: filter.inlineBlocksStripped,
+      });
+    }
+
+    if (visibleChars === 0) {
+      throw new AIProviderError(
+        "No text content in Gemini stream",
+        "gemini",
+        false,
+      );
+    }
+
+    // Counts and timings only — never the generated text.
+    logger.info("Gemini stream completed", {
+      model: geminiModel,
+      prepMs,
+      firstChunkMs,
+      totalMs: Date.now() - startedAt,
+      chunks,
+      visibleChars,
+      inputTokens: usage?.promptTokenCount,
+      outputTokens: usage?.candidatesTokenCount,
+      thoughtsTokens: usage?.thoughtsTokenCount,
+      finishReason,
+    });
+  } catch (error) {
+    if (error instanceof AIProviderError) {
+      throw error;
+    }
+
+    const details = describeError(error);
+    logger.error("Gemini stream failed", {
+      model: geminiModel,
+      messageCount: messages.length,
+      chunksBeforeFailure: chunks,
+      failedAfterMs: Date.now() - startedAt,
+      ...details,
+    });
+    throw new AIProviderError(
+      details.message,
+      "gemini",
+      isRetryableMessage(details.message),
+      details.httpCode,
+    );
+  }
+}
+
+export { generateWithGemini, streamWithGemini };

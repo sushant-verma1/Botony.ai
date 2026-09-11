@@ -1,48 +1,70 @@
+import { TriangleAlert } from "lucide-react";
 import type { ChatMessage } from "../types/chat";
+import Mark from "./Mark";
 
 interface MessageBubbleProps {
   message: ChatMessage;
 }
 
+/** The rail on the left of every turn. Holds the mark for Botony and nothing
+ *  for you — which is the point: the product has a face, you do not, and the
+ *  plate under your own words already says whose they are. */
+function Rail({ children }: { children?: React.ReactNode }) {
+  return <div className="w-7 shrink-0 pt-[0.6rem]">{children}</div>;
+}
+
 function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isEmergency = message.emergencyDetected;
+
   if (!isUser && isEmergency) {
     return (
-      <div className="flex items-start gap-3">
-        <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-sm flex-shrink-0">
-          🚨
-        </div>
-        <div className="bg-red-50 border border-red-300 rounded-2xl rounded-tl-none px-4 py-3 max-w-xl shadow-sm">
-          <p className="text-red-700 font-semibold text-sm whitespace-pre-wrap">
-            {message.content}
+      <article className="chat-turn flex gap-3 sm:gap-4">
+        <Rail>
+          <Mark className="w-7" />
+        </Rail>
+        {/* The only filled block in the product. A page that has never once
+            put ink behind text does not need red to be read as an alarm —
+            but the icon takes the one saturated colour there is, because a
+            reader skimming for the shape of the thing should find it before
+            they find the words. */}
+        <div className="min-w-0 max-w-[62ch] rounded-2xl bg-foreground px-5 py-4 text-background">
+          <p className="chat-label flex items-center gap-2 text-background/75">
+            <TriangleAlert
+              className="size-3.5 text-[var(--alarm)]"
+              aria-hidden="true"
+            />
+            Emergency
           </p>
+          <p className="chat-prose mt-2.5 font-medium">{message.content}</p>
         </div>
-      </div>
+      </article>
     );
   }
 
   if (isUser) {
     return (
-      <div className="flex justify-end">
-        <div className="bg-blue-600 text-white rounded-2xl rounded-tr-none px-4 py-3 max-w-xl shadow-sm">
-          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+      <article className="chat-turn flex gap-3 sm:gap-4">
+        <Rail />
+        <div className="min-w-0 max-w-[54ch] rounded-2xl bg-muted px-4 py-3">
+          <h3 className="sr-only">You</h3>
+          <p className="chat-prose">{message.content}</p>
         </div>
-      </div>
+      </article>
     );
   }
 
   return (
-    <div className="flex items-start gap-3">
-      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm flex-shrink-0">
-        🩺
+    <article className="chat-turn flex gap-3 sm:gap-4">
+      <Rail>
+        <Mark className="w-7" />
+      </Rail>
+      {/* No container. The answer is the page. */}
+      <div className="min-w-0 max-w-[68ch] pt-px">
+        <h3 className="sr-only">Botony</h3>
+        <p className="chat-prose">{message.content}</p>
       </div>
-      <div className="bg-white border rounded-2xl rounded-tl-none px-4 py-3 max-w-xl shadow-sm">
-        <p className="text-sm text-gray-800 whitespace-pre-wrap">
-          {message.content}
-        </p>
-      </div>
-    </div>
+    </article>
   );
 }
 

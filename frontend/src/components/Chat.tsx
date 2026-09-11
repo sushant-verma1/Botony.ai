@@ -7,22 +7,38 @@ import { chatAPI } from "../services/api/chatApi";
 import {
   attachmentAPI,
   mimeToKind,
-  ALLOWED_ATTACHMENT_MIME_TYPES,
   MAX_IMAGE_BYTES,
   MAX_PDF_BYTES,
 } from "../services/api/attachmentApi";
 import type { ChatMessage, ConversationSummary } from "../types/chat";
 import MessageBubble from "./MessageBubble";
+import Mark from "./Mark";
 import Spinner from "./Spinner";
 import ConversationSidebar from "./ConversationSidebar";
 import ConfirmDialog from "./ConfirmDialog";
+import ChatComposer from "./chat/ChatComposer";
+import type { PendingAttachment } from "./chat/ChatComposer";
+import ChatTopBar from "./chat/ChatTopBar";
+import {
+  ProfileDialog,
+  SafetyDialog,
+  SettingsDialog,
+} from "./chat/AccountDialogs";
+import { useChatPrefs } from "./chat/prefs";
+import { SidebarInset, SidebarProvider } from "./ui/sidebar";
+import "./chat/chat.css";
 
-interface PendingAttachment {
-  attachmentId: string;
-  name: string;
-  status: "uploading" | "ready" | "error";
-  error?: string;
-}
+/** Mirrors createMessageSchema's bound, so the field stops where the API
+ *  would have refused. */
+const MAX_MESSAGE_LENGTH = 3000;
+
+/** Openings that show the range rather than sell it: one to watch, one to
+ *  book, one to decide about. The three cases the landing page names. */
+const OPENERS = [
+  "I've had a headache for three days",
+  "My throat hurts and I've been running a fever",
+  "I'm not sure whether this rash needs a doctor",
+];
 
 export default function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -42,7 +58,15 @@ export default function Chat() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Which of the account errands is open, if any. One at a time — they are
+  // alternatives, not a stack.
+  const [openDialog, setOpenDialog] = useState<
+    "profile" | "settings" | "safety" | null
+  >(null);
+  // Set once the answer starts arriving: the waiting mark gives way to the
+  // turn that is filling in.
+  const [streamingId, setStreamingId] = useState<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const isPrependingRef = useRef<boolean>(false);
@@ -50,6 +74,7 @@ export default function Chat() {
     prevScrollHeight: number;
     prevScrollTop: number;
   } | null>(null);
+  const [prefs, setPrefs] = useChatPrefs();
   const { user, logout, loading: authLoading, isLoggedIn } = useAuth();
   const navigate = useNavigate();
 
@@ -189,6 +214,11 @@ export default function Chat() {
     init();
   }, [authLoading, isLoggedIn]);
 
+  // Leaving the page stops the answer being generated server-side too.
+  useEffect(() => {
+    return () => streamAbortRef.current?.abort();
+  }, []);
+
   useLayoutEffect(() => {
     const container = messagesContainerRef.current;
     const adjust = prependAdjustRef.current;
@@ -208,12 +238,7 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleFileSelect = async (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";
-
+  const handleFilesPicked = async (files: File[]) => {
     for (const file of files) {
       const kind = mimeToKind(file.type);
       if (!kind) {
@@ -274,9 +299,7 @@ export default function Chat() {
     }
   };
 
-  const handleSend = async (e: React.SubmitEvent) => {
-    e.preventDefault();
-
+  const handleSend = async () => {
     const trimmed = input.trim();
     if (!trimmed || !conversationId) return;
 
@@ -292,36 +315,82 @@ export default function Chat() {
       .filter((a) => a.status === "ready")
       .map((a) => a.attachmentId);
 
+    // The answer arrives as deltas, so it is accumulated here and the
+    // placeholder turn is rewritten as it grows. MessageBubble renders
+    // plain text, so a half-received answer can never render as broken
+    // markup.
+    const placeholderId = crypto.randomUUID();
+    let streamed = "";
+
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setLoading(true);
 
     try {
-      const { data } = await chatAPI.sendMessage(
+      const result = await chatAPI.streamMessage(
         conversationId,
         trimmed,
         attachmentIds.length > 0 ? attachmentIds : undefined,
+        {
+          signal: controller.signal,
+          onStart: () => {
+            setStreamingId(placeholderId);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: placeholderId,
+                role: "assistant",
+                content: "",
+                emergencyDetected: false,
+                createdAt: new Date().toISOString(),
+              },
+            ]);
+          },
+          onDelta: (text) => {
+            streamed += text;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === placeholderId ? { ...m, content: streamed } : m,
+              ),
+            );
+          },
+        },
       );
 
-      const assistantMessage: ChatMessage = {
-        id: data.assistantMessageId,
-        role: "assistant",
-        content: data.response,
-        emergencyDetected: data.type === "emergency",
-        createdAt: new Date().toISOString(),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
+      // The placeholder becomes the persisted message: same text, real id.
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === placeholderId
+            ? {
+                ...m,
+                id: result.assistantMessageId,
+                content: streamed,
+                emergencyDetected: result.type === "emergency",
+              }
+            : m,
+        ),
+      );
       setAttachments([]);
       fetchConversations();
     } catch (err) {
       const message = axios.isAxiosError(err)
         ? err.response?.data?.message || "Failed to send message"
-        : "Failed to send message";
+        : err instanceof Error && err.message
+          ? err.message
+          : "Failed to send message";
       toast.error(message);
-      setMessages((prev) => prev.slice(0, -1));
+      // Nothing was persisted, so the placeholder and the optimistic user
+      // message both go, and the text returns to the composer.
+      setMessages((prev) =>
+        prev.filter((m) => m.id !== placeholderId && m.id !== userMessage.id),
+      );
       setInput(trimmed);
     } finally {
+      setStreamingId(null);
+      streamAbortRef.current = null;
       setLoading(false);
     }
   };
@@ -337,8 +406,14 @@ export default function Chat() {
     }
   };
 
+  const activeConversation =
+    conversations.find((c) => c.id === conversationId) ?? null;
+
   return (
-    <div className="flex h-screen bg-gray-50">
+    <SidebarProvider
+      className="chat h-svh min-h-svh overflow-hidden"
+      data-text-size={prefs.textSize}
+    >
       <ConversationSidebar
         conversations={conversations}
         activeConversationId={conversationId}
@@ -349,27 +424,95 @@ export default function Chat() {
         creatingChat={creatingChat}
         disabled={creatingChat || switchingChat || loading}
       />
-      <div className="flex flex-col flex-1 min-w-0">
-      <div className="bg-white border-b px-6 py-3 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-2">
-          <span className="text-blue-600 text-xl">🏥</span>
-          <span className="font-semibold text-gray-800">Medical AI</span>
-          <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded-full font-medium">
-            Prototype
-          </span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-500">{user?.name}</span>
-          <button
-            onClick={() => setShowLogoutConfirm(true)}
-            disabled={loggingOut}
-            className="text-sm text-red-500 hover:text-red-700 disabled:opacity-50 flex items-center gap-1.5"
+
+      <SidebarInset className="min-w-0 overflow-hidden">
+        <ChatTopBar
+          name={user?.name}
+          email={user?.email}
+          conversation={activeConversation}
+          onOpenProfile={() => setOpenDialog("profile")}
+          onOpenSettings={() => setOpenDialog("settings")}
+          onOpenSafety={() => setOpenDialog("safety")}
+          onRequestLogout={() => setShowLogoutConfirm(true)}
+          loggingOut={loggingOut}
+        />
+
+        {/* The transcript and the hem that fades it into the composer. */}
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={messagesContainerRef}
+            onScroll={handleMessagesScroll}
+            data-testid="messages-container"
+            data-lenis-prevent
+            className="h-full overflow-y-auto px-3 py-8 sm:px-6"
           >
-            {loggingOut && <Spinner className="h-3.5 w-3.5" />}
-            Logout
-          </button>
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">
+              {loadingOlder && (
+                <div className="flex justify-center py-1">
+                  <Spinner className="size-4 text-muted-foreground" />
+                </div>
+              )}
+
+              {messages.length === 0 && !switchingChat && (
+                <EmptyTranscript
+                  disabled={loading || switchingChat || !conversationId}
+                  onPick={setInput}
+                />
+              )}
+
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} message={msg} />
+              ))}
+
+              {loading && !streamingId && (
+                <div className="flex gap-3 sm:gap-4">
+                  <div className="w-7 shrink-0 pt-[0.6rem]">
+                    <Mark className="chat-waiting w-7" />
+                  </div>
+                  <p className="sr-only" aria-live="polite">
+                    Botony is thinking
+                  </p>
+                </div>
+              )}
+
+              <div ref={bottomRef} />
+            </div>
+          </div>
+
+          <div
+            className="chat-hem pointer-events-none absolute inset-x-0 bottom-0 h-8"
+            aria-hidden="true"
+          />
         </div>
-      </div>
+
+        <ChatComposer
+          value={input}
+          onChange={setInput}
+          onSubmit={handleSend}
+          onFilesPicked={handleFilesPicked}
+          attachments={attachments}
+          onRemoveAttachment={handleRemoveAttachment}
+          disabled={loading || switchingChat || !conversationId}
+          sending={loading}
+          enterSends={prefs.enterSends}
+          maxLength={MAX_MESSAGE_LENGTH}
+        />
+      </SidebarInset>
+
+      <ProfileDialog
+        open={openDialog === "profile"}
+        onOpenChange={(open) => setOpenDialog(open ? "profile" : null)}
+      />
+      <SettingsDialog
+        open={openDialog === "settings"}
+        onOpenChange={(open) => setOpenDialog(open ? "settings" : null)}
+        prefs={prefs}
+        onChange={setPrefs}
+      />
+      <SafetyDialog
+        open={openDialog === "safety"}
+        onOpenChange={(open) => setOpenDialog(open ? "safety" : null)}
+      />
 
       {showLogoutConfirm && (
         <ConfirmDialog
@@ -392,150 +535,46 @@ export default function Chat() {
           loading={isDeleting}
         />
       )}
+    </SidebarProvider>
+  );
+}
 
-      <div
-        ref={messagesContainerRef}
-        onScroll={handleMessagesScroll}
-        data-testid="messages-container"
-        data-lenis-prevent
-        className="flex-1 overflow-y-auto px-4 py-6 space-y-4"
-      >
-        {loadingOlder && (
-          <div className="flex justify-center py-2">
-            <Spinner className="h-5 w-5 text-gray-400" />
-          </div>
-        )}
+/** An empty conversation, picking up the landing page's last line. The three
+ *  openings are not features — they are the shape of a first message, which
+ *  is the thing people actually stall on. */
+function EmptyTranscript({
+  disabled,
+  onPick,
+}: {
+  disabled: boolean;
+  onPick: (text: string) => void;
+}) {
+  return (
+    <div className="chat-turn pt-6 pb-2 sm:pt-12">
+      <Mark className="w-8 text-foreground" />
+      <h2 className="mt-6 max-w-[18ch] text-[clamp(27px,3.4vw,38px)] leading-[1.16] font-normal tracking-[-0.02em] text-balance">
+        Start with how you feel.
+      </h2>
+      <p className="mt-4 max-w-[52ch] text-[15px] leading-[1.66] text-muted-foreground text-pretty">
+        Plain language, the way you would tell a friend or a nurse. Botony
+        reads what you write and helps you tell the difference between
+        something to watch, something to book, and something to act on now.
+      </p>
 
-        {messages.length === 0 && (
-          <div className="text-center text-gray-400 mt-16">
-            <p className="text-4xl mb-3">🩺</p>
-            <p className="text-lg font-medium text-gray-600">
-              How can I help you today?
-            </p>
-            <p className="text-sm mt-1">
-              Describe your symptoms and I'll provide general health
-              information.
-            </p>
-          </div>
-        )}
-
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+      <ul className="mt-9 mb-0 list-none p-0">
+        {OPENERS.map((opener) => (
+          <li key={opener} className="border-b border-border first:border-t">
+            <button
+              type="button"
+              onClick={() => onPick(opener)}
+              disabled={disabled}
+              className="w-full cursor-pointer py-3.5 text-left text-[15px] tracking-[-0.008em] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            >
+              {opener}
+            </button>
+          </li>
         ))}
-
-        {loading && (
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-sm flex-shrink-0">
-              🩺
-            </div>
-            <div className="bg-white border rounded-2xl rounded-tl-none px-4 py-3 shadow-sm">
-              <div className="flex gap-1 items-center h-5">
-                <span
-                  className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                  style={{ animationDelay: "0ms" }}
-                />
-                <span
-                  className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                  style={{ animationDelay: "150ms" }}
-                />
-                <span
-                  className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
-                  style={{ animationDelay: "300ms" }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div ref={bottomRef} />
-      </div>
-
-      <div className="bg-white border-t px-4 py-4 shadow-sm">
-        {attachments.length > 0 && (
-          <div className="flex flex-wrap gap-2 max-w-3xl mx-auto mb-2">
-            {attachments.map((a) => (
-              <span
-                key={a.attachmentId}
-                className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
-                  a.status === "error"
-                    ? "bg-red-50 border-red-200 text-red-600"
-                    : "bg-gray-100 border-gray-200 text-gray-600"
-                }`}
-              >
-                {a.status === "uploading" && <Spinner className="h-3 w-3" />}
-                {a.name}
-                <button
-                  type="button"
-                  onClick={() => handleRemoveAttachment(a.attachmentId)}
-                  aria-label={`Remove ${a.name}`}
-                  className="text-gray-400 hover:text-gray-700"
-                >
-                  ✕
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        <form onSubmit={handleSend} className="flex gap-3 max-w-3xl mx-auto">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={ALLOWED_ATTACHMENT_MIME_TYPES.join(",")}
-            multiple
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loading || switchingChat || !conversationId}
-            aria-label="Attach a photo or report"
-            className="border border-gray-300 text-gray-500 rounded-xl px-3.5 py-2.5 hover:bg-gray-50 disabled:opacity-50"
-          >
-            📎
-          </button>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Describe your symptoms..."
-            disabled={loading || switchingChat || !conversationId}
-            maxLength={3000}
-            className="flex-1 border border-gray-300 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-          />
-          <button
-            type="submit"
-            disabled={
-              loading ||
-              switchingChat ||
-              !input.trim() ||
-              !conversationId ||
-              attachments.some((a) => a.status === "uploading")
-            }
-            className="bg-blue-600 text-white px-5 py-2.5 rounded-xl hover:bg-blue-700 disabled:opacity-50 font-medium flex items-center justify-center gap-2"
-          >
-            {loading && <Spinner />}
-            Send
-          </button>
-        </form>
-        <div className="flex justify-between items-center max-w-3xl mx-auto mt-2 px-1">
-          <p className="text-xs text-gray-400">
-            Not a substitute for professional medical advice
-          </p>
-          <p
-            className={`text-xs font-medium ${
-              input.length >= 2500
-                ? "text-red-500"
-                : input.length >= 1000
-                  ? "text-yellow-500"
-                  : "text-gray-400"
-            }`}
-          >
-            {input.length}/3000
-          </p>
-        </div>
-      </div>
-      </div>
+      </ul>
     </div>
   );
 }

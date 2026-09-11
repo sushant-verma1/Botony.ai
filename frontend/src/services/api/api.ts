@@ -2,6 +2,7 @@ import axios from "axios";
 import type { InternalAxiosRequestConfig } from "axios";
 import type {
   AuthResponse,
+  ProfileResponse,
   RefreshResponse,
 } from "../../types/auth";
 
@@ -47,6 +48,46 @@ function refresh(): Promise<RefreshResponse> {
   return refreshRequest;
 }
 
+/**
+ * The streaming chat endpoint answers with an event stream, which Axios
+ * cannot expose incrementally — so it goes out through fetch instead. It
+ * still belongs here: this is where the access token and the single-flight
+ * refresh live, so a streaming request joins the same auth session as every
+ * Axios call rather than running a second, competing one.
+ */
+async function authFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const send = (token: string | null) =>
+    fetch(`${api.defaults.baseURL}${path}`, {
+      ...init,
+      // Sends the HttpOnly refresh cookie, exactly like withCredentials above.
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...init.headers,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+  const response = await send(accessToken);
+  if (response.status !== 401) {
+    return response;
+  }
+
+  try {
+    // Shares refreshRequest with the interceptor, so a 401 here and a 401 on
+    // an Axios call still produce one /auth/refresh between them.
+    const { accessToken: token } = await refresh();
+
+    return await send(token);
+  } catch {
+    accessToken = null;
+    handlers?.onAuthFailure();
+
+    // The caller sees the original 401, not the refresh failure.
+    return response;
+  }
+}
+
 export const authSession = {
   setAccessToken(token: string | null) {
     accessToken = token;
@@ -59,6 +100,8 @@ export const authSession = {
   // The refresh token is an HttpOnly cookie; withCredentials above is the
   // only reason this works, and JS never sees the token itself.
   refresh,
+
+  fetch: authFetch,
 
   // Returns an unsubscribe so AuthProvider can detach on unmount.
   register(next: SessionHandlers) {
@@ -137,6 +180,11 @@ export const authAPI = {
       email,
       password,
     }),
+
+  // The backend column is firstName; the app only ever shows one name, so
+  // that is the field the profile form edits.
+  updateProfile: (firstName: string) =>
+    api.patch<ProfileResponse>("/auth/profile", { firstName }),
 
   logout: () =>
     api.post<{ message: string }>("/auth/logout"),
