@@ -84,7 +84,7 @@ export function ProfileDialog({ open, onOpenChange }: DialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-5 p-5 sm:max-w-md">
+      <DialogContent className="gap-5 p-5 sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-[17px] tracking-[-0.012em]">
             Profile
@@ -140,7 +140,7 @@ export function ProfileDialog({ open, onOpenChange }: DialogProps) {
             type="submit"
             form="profile-form"
             disabled={saving || unchanged || !trimmed}
-            className="h-9 rounded-full px-4"
+            className="h-9 rounded-full px-4 shadow-md transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.2] motion-reduce:transition-none motion-reduce:hover:scale-100"
           >
             {saving && <Spinner className="size-3.5" />}
             {saving ? "Saving..." : "Save changes"}
@@ -230,7 +230,7 @@ export function SettingsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-4 p-5 sm:max-w-lg">
+      <DialogContent className="gap-4 p-5 sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="text-[17px] tracking-[-0.012em]">
             Settings
@@ -286,7 +286,7 @@ export function SettingsDialog({
 export function SafetyDialog({ open, onOpenChange }: DialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-4 p-5 sm:max-w-lg">
+      <DialogContent className="gap-4 p-5 sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="text-[19px] tracking-[-0.018em]">
             The honest boundaries.

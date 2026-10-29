@@ -1,9 +1,14 @@
 import Express from "express";
+import type { Conversation, Message } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import {
   detectEmergency,
   getEmergencyResponse,
 } from "../utils/safety.util.js";
+import {
+  startConversationWithFirstMessage,
+  DraftConflictError,
+} from "../services/conversation.service.js";
 import {
   streamResponse,
   AIServiceError,
@@ -146,15 +151,17 @@ export const deleteConversationController = async (
 };
 
 export const messageController = async (
-  req: Express.Request<{ chatid: string }>,
+  req: Express.Request<{ chatid?: string }>,
   res: Express.Response,
 ) => {
-  const conversationId = req.params.chatid;
-  const { content, attachmentIds = [] } = req.body;
+  // Present for POST /:chatid/message, absent for POST /message — the
+  // no-conversation-yet path, where body.draftId stands in for it.
+  const paramConversationId = req.params.chatid;
+  const { content, attachmentIds = [], draftId } = req.body;
   const handlerStartedAt = Date.now();
   logger.info("Message received", {
     userId: req.user.userId,
-    conversationId,
+    conversationId: paramConversationId,
     contentLength: content?.length,
   });
 
@@ -173,21 +180,29 @@ export const messageController = async (
       .json({ message: "Message too long (max 3000 chars)" });
   }
 
-  const conversation = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-  });
+  let conversation: Conversation | undefined;
 
-  if (!conversation) {
-    logger.warn("Conversation not found", { conversationId });
-    return res.status(404).json({ message: "Conversation not found" });
-  }
-
-  if (conversation.userId !== req.user.userId) {
-    logger.warn("Unauthorized access attempt", {
-      userId: req.user.userId,
-      conversationId,
+  if (paramConversationId) {
+    const found = await prisma.conversation.findUnique({
+      where: { id: paramConversationId },
     });
-    return res.status(403).json({ message: "Not allowed" });
+
+    if (!found) {
+      logger.warn("Conversation not found", {
+        conversationId: paramConversationId,
+      });
+      return res.status(404).json({ message: "Conversation not found" });
+    }
+
+    if (found.userId !== req.user.userId) {
+      logger.warn("Unauthorized access attempt", {
+        userId: req.user.userId,
+        conversationId: paramConversationId,
+      });
+      return res.status(403).json({ message: "Not allowed" });
+    }
+
+    conversation = found;
   }
 
   let validatedAttachments;
@@ -205,6 +220,67 @@ export const messageController = async (
 
   const isEmergency = detectEmergency(content);
 
+  // Set only on the draft path: the first message of a brand-new
+  // conversation, already persisted (and its attachments already bound) by
+  // the time this line finishes.
+  let draftUserMessage: Message | undefined;
+  let replayed = false;
+
+  if (!conversation) {
+    try {
+      const result = await startConversationWithFirstMessage({
+        userId: req.user.userId,
+        content,
+        attachmentIds,
+        emergencyDetected: isEmergency,
+        draftId,
+      });
+      conversation = result.conversation;
+      draftUserMessage = result.userMessage;
+      replayed = result.replayed;
+    } catch (error) {
+      if (error instanceof DraftConflictError) {
+        return res.status(409).json({ message: error.message });
+      }
+      if (error instanceof AttachmentError) {
+        return res.status(error.status).json({ message: error.message });
+      }
+      throw error;
+    }
+  }
+
+  // The existing-conversation path keeps using the route param exactly as
+  // before; only the draft path's freshly created id is new.
+  const conversationId = paramConversationId ?? conversation.id;
+
+  if (replayed) {
+    // The draftId was already used. If it already produced a reply, this is
+    // a plain retry of a request that already succeeded — send the same
+    // answer back rather than asking the model again. If it has not (the
+    // original request is still streaming, or died before persisting a
+    // reply), fall through and produce one now using the message that
+    // already exists.
+    const existingAssistantMessage = await prisma.message.findFirst({
+      where: { conversationId, role: "assistant" },
+      orderBy: { createdAt: "asc" },
+    });
+
+    if (existingAssistantMessage && draftUserMessage) {
+      openEventStream(res);
+      sendEvent(res, "start", {
+        provider: draftUserMessage.emergencyDetected ? "safety" : "cache",
+      });
+      sendEvent(res, "delta", { text: existingAssistantMessage.content });
+      sendEvent(res, "done", {
+        conversationId,
+        messageId: draftUserMessage.id,
+        assistantMessageId: existingAssistantMessage.id,
+        type: draftUserMessage.emergencyDetected ? "emergency" : "normal",
+      });
+      return res.end();
+    }
+  }
+
   if (isEmergency) {
     logger.warn("Emergency detected", {
       userId: req.user.userId,
@@ -212,45 +288,76 @@ export const messageController = async (
     });
     const emergencyResponse = getEmergencyResponse();
 
-    const result = await prisma.$transaction(async (tx) => {
-      const userMessage = await tx.message.create({
-        data: {
+    let userMessage: Message;
+    let assistantMessage: Message;
+
+    if (draftUserMessage) {
+      // The draft path already created and bound the user message; only the
+      // canned reply and the conversation status are still needed.
+      userMessage = draftUserMessage;
+      assistantMessage = await prisma.$transaction(async (tx) => {
+        const assistantMessage = await tx.message.create({
+          data: {
+            conversationId,
+            content: emergencyResponse,
+            role: "assistant",
+            userId: req.user.userId,
+            emergencyDetected: true,
+          },
+        });
+
+        await tx.conversation.update({
+          where: { id: conversationId },
+          data: { status: "emergency" },
+        });
+
+        return assistantMessage;
+      });
+    } else {
+      const result = await prisma.$transaction(async (tx) => {
+        const userMessage = await tx.message.create({
+          data: {
+            conversationId,
+            content,
+            role: "user",
+            userId: req.user.userId,
+            emergencyDetected: true,
+          },
+        });
+
+        const assistantMessage = await tx.message.create({
+          data: {
+            conversationId,
+            content: emergencyResponse,
+            role: "assistant",
+            userId: req.user.userId,
+            emergencyDetected: true,
+          },
+        });
+
+        await tx.conversation.update({
+          where: { id: conversationId },
+          data: { status: "emergency" },
+        });
+
+        return { userMessage, assistantMessage };
+      });
+
+      userMessage = result.userMessage;
+      assistantMessage = result.assistantMessage;
+
+      // Patient safety first: the emergency response must reach the user
+      // even if attaching their files fails, so this is logged rather than
+      // thrown.
+      try {
+        await bindAttachmentsToMessage(attachmentIds, userMessage.id);
+      } catch (error) {
+        logger.warn("Could not bind attachments to an emergency message", {
           conversationId,
-          content,
-          role: "user",
           userId: req.user.userId,
-          emergencyDetected: true,
-        },
-      });
-
-      const assistantMessage = await tx.message.create({
-        data: {
-          conversationId,
-          content: emergencyResponse,
-          role: "assistant",
-          userId: req.user.userId,
-          emergencyDetected: true,
-        },
-      });
-
-      await tx.conversation.update({
-        where: { id: conversationId },
-        data: { status: "emergency" },
-      });
-
-      return { userMessage, assistantMessage, emergencyResponse };
-    });
-
-    // Patient safety first: the emergency response must reach the user even
-    // if attaching their files fails, so this is logged rather than thrown.
-    try {
-      await bindAttachmentsToMessage(attachmentIds, result.userMessage.id);
-    } catch (error) {
-      logger.warn("Could not bind attachments to an emergency message", {
-        conversationId,
-        userId: req.user.userId,
-        message: error instanceof Error ? error.message : "unknown",
-      });
+          message: error instanceof Error ? error.message : "unknown",
+        });
+      }
     }
 
     logger.info("Emergency response sent", {
@@ -261,27 +368,32 @@ export const messageController = async (
     // single path. The text is canned, so it is one delta.
     openEventStream(res);
     sendEvent(res, "start", { provider: "safety" });
-    sendEvent(res, "delta", { text: result.emergencyResponse });
+    sendEvent(res, "delta", { text: emergencyResponse });
     sendEvent(res, "done", {
-      messageId: result.userMessage.id,
-      assistantMessageId: result.assistantMessage.id,
+      conversationId,
+      messageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
       type: "emergency",
     });
     return res.end();
   }
 
   try {
-    const userMessage = await prisma.message.create({
-      data: {
-        conversationId,
-        content,
-        role: "user",
-        userId: req.user.userId,
-        emergencyDetected: false,
-      },
-    });
+    const userMessage =
+      draftUserMessage ??
+      (await prisma.message.create({
+        data: {
+          conversationId,
+          content,
+          role: "user",
+          userId: req.user.userId,
+          emergencyDetected: false,
+        },
+      }));
 
-    await bindAttachmentsToMessage(attachmentIds, userMessage.id);
+    if (!draftUserMessage) {
+      await bindAttachmentsToMessage(attachmentIds, userMessage.id);
+    }
 
     const previousMessages = await prisma.message.findMany({
       where: { conversationId },
@@ -462,6 +574,7 @@ export const messageController = async (
     });
 
     sendEvent(res, "done", {
+      conversationId,
       messageId: userMessage.id,
       assistantMessageId: assistantMessage.id,
       type: "normal",

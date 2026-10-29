@@ -25,6 +25,7 @@ vi.mock("../config/db.js", () => ({
       create: vi.fn(),
       findMany: vi.fn(),
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
     },
     $transaction: vi.fn(),
   },
@@ -126,6 +127,7 @@ beforeEach(() => {
   vi.mocked(prisma.message.create).mockReset();
   vi.mocked(prisma.message.findMany).mockReset();
   vi.mocked(prisma.message.findFirst).mockReset();
+  vi.mocked(prisma.message.findUnique).mockReset().mockResolvedValue(null);
   vi.mocked(prisma.$transaction).mockReset();
   vi.mocked(prisma.$transaction).mockImplementation(((cb: any) =>
     cb(prisma)) as never);
@@ -412,6 +414,7 @@ describe("messageController", () => {
       expect(frames.map((f) => f.event)).toEqual(["start", "delta", "done"]);
       expect(frames[1].data.text).toContain("EMERGENCY");
       expect(frames[2].data).toEqual({
+        conversationId: "conv-1",
         type: "emergency",
         messageId: "user-msg-1",
         assistantMessageId: "assistant-msg-1",
@@ -465,6 +468,7 @@ describe("messageController", () => {
       expect(frames[frames.length - 1]).toEqual({
         event: "done",
         data: {
+          conversationId: "conv-1",
           type: "normal",
           messageId: "user-msg-1",
           assistantMessageId: "assistant-msg-1",
@@ -1263,5 +1267,141 @@ describe("messageController streaming", () => {
     expect(prisma.message.create).toHaveBeenCalledTimes(1);
     expect(sseFrames(res).some((f) => f.event === "done")).toBe(false);
     expect(res.end).toHaveBeenCalled();
+  });
+});
+
+describe("messageController draft conversations (no :chatid)", () => {
+  const draftId = "11111111-1111-4111-8111-111111111111";
+
+  function buildDraftReq(body: Record<string, unknown> = {}) {
+    // No params.chatid — this is the POST /chat/message shape.
+    return buildReq({
+      params: {},
+      body: { content: "I have a mild headache", draftId, ...body },
+    } as never);
+  }
+
+  it("creates a conversation and the first message, and never touches conversation.findUnique", async () => {
+    vi.mocked(prisma.conversation.create).mockResolvedValue({
+      id: "conv-new",
+      userId: "user-1",
+    } as never);
+    vi.mocked(prisma.message.create)
+      .mockResolvedValueOnce({
+        id: "user-msg-1",
+        emergencyDetected: false,
+      } as never)
+      .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+    vi.mocked(prisma.message.findMany).mockResolvedValue([
+      { role: "user", content: "I have a mild headache" },
+    ] as never);
+    mockStreamResponse.mockImplementation(() => aiStream("Try resting."));
+    const res = createMockRes();
+
+    await messageController(buildDraftReq(), res);
+
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+    expect(prisma.conversation.create).toHaveBeenCalledWith({
+      data: { userId: "user-1", title: "New chat" },
+    });
+    expect(vi.mocked(prisma.message.create).mock.calls[0][0]).toMatchObject({
+      data: expect.objectContaining({
+        conversationId: "conv-new",
+        role: "user",
+        clientKey: draftId,
+      }),
+    });
+    expect(lastSseFrame(res)!.data).toMatchObject({
+      conversationId: "conv-new",
+      assistantMessageId: "assistant-msg-1",
+    });
+  });
+
+  it("creates no conversation when attachment validation fails before any write", async () => {
+    mockValidateAttachmentsForMessage.mockRejectedValue(
+      new AttachmentError("One or more attachments are not ready yet", 400),
+    );
+    const res = createMockRes();
+
+    await messageController(
+      buildDraftReq({ attachmentIds: ["att-1"] }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it("replays the stored answer instead of creating a duplicate when draftId was already used", async () => {
+    vi.mocked(prisma.message.findUnique).mockResolvedValue({
+      id: "user-msg-1",
+      userId: "user-1",
+      emergencyDetected: false,
+      conversation: { id: "conv-existing", userId: "user-1", status: "ongoing" },
+    } as never);
+    vi.mocked(prisma.message.findFirst).mockResolvedValue({
+      id: "assistant-msg-1",
+      content: "Try resting.",
+    } as never);
+    const res = createMockRes();
+
+    await messageController(buildDraftReq(), res);
+
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(mockStreamResponse).not.toHaveBeenCalled();
+    expect(lastSseFrame(res)!.data).toEqual({
+      conversationId: "conv-existing",
+      messageId: "user-msg-1",
+      assistantMessageId: "assistant-msg-1",
+      type: "normal",
+    });
+  });
+
+  it("rejects a draftId that was already used by a different account", async () => {
+    vi.mocked(prisma.message.findUnique).mockResolvedValue({
+      id: "user-msg-1",
+      userId: "someone-else",
+      emergencyDetected: false,
+      conversation: { id: "conv-existing", userId: "someone-else" },
+    } as never);
+    const res = createMockRes();
+
+    await messageController(buildDraftReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
+  });
+
+  it("routes an emergency first message through the canned response and marks the conversation emergency", async () => {
+    vi.mocked(prisma.conversation.create).mockResolvedValue({
+      id: "conv-new",
+      userId: "user-1",
+    } as never);
+    vi.mocked(prisma.message.create)
+      .mockResolvedValueOnce({
+        id: "user-msg-1",
+        emergencyDetected: true,
+      } as never)
+      .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+    const res = createMockRes();
+
+    await messageController(
+      buildDraftReq({ content: "I am having chest pain" }),
+      res,
+    );
+
+    expect(mockStreamResponse).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: "conv-new" },
+      data: { status: "emergency" },
+    });
+    const frames = sseFrames(res);
+    expect(frames.map((f) => f.event)).toEqual(["start", "delta", "done"]);
+    expect(frames[2].data).toMatchObject({
+      conversationId: "conv-new",
+      type: "emergency",
+    });
   });
 });

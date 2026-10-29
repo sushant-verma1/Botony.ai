@@ -82,6 +82,11 @@ model Message {
 
   createdAt DateTime @default(now())
 
+  // Client-supplied key for the first message of a new conversation only.
+  // Makes the create-conversation-and-first-message request replay-safe.
+  // Always NULL for every other message; never used as a general identifier.
+  clientKey String? @unique
+
   // Serves getHistoryController's cursor pagination and messageController's
   // previousMessages fetch: where conversationId, orderBy createdAt.
   @@index([conversationId, createdAt])

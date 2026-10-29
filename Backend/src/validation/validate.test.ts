@@ -4,6 +4,7 @@ import {
   loginSchema,
   createConversationSchema,
   createMessageSchema,
+  createFirstMessageSchema,
   renameConversationSchema,
 } from "./validate.js";
 
@@ -139,6 +140,47 @@ describe("createMessageSchema", () => {
       content: "a".repeat(3000),
     });
     expect(error).toBeUndefined();
+  });
+
+  it("rejects a draftId on the existing-conversation schema", () => {
+    const { error } = createMessageSchema.validate({
+      content: "Hello",
+      draftId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(error).toBeDefined();
+  });
+});
+
+describe("createFirstMessageSchema", () => {
+  const draftId = "11111111-1111-4111-8111-111111111111";
+
+  it("accepts valid content with a draftId", () => {
+    const { error } = createFirstMessageSchema.validate({
+      content: "Hello",
+      draftId,
+    });
+    expect(error).toBeUndefined();
+  });
+
+  it("requires draftId", () => {
+    const { error } = createFirstMessageSchema.validate({ content: "Hello" });
+    expect(error).toBeDefined();
+  });
+
+  it("rejects a non-uuid draftId", () => {
+    const { error } = createFirstMessageSchema.validate({
+      content: "Hello",
+      draftId: "not-a-uuid",
+    });
+    expect(error).toBeDefined();
+  });
+
+  it("still enforces the same content rules", () => {
+    const { error } = createFirstMessageSchema.validate({
+      content: "",
+      draftId,
+    });
+    expect(error).toBeDefined();
   });
 });
 

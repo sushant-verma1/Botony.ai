@@ -5,6 +5,7 @@ export interface NewChatResponse {
 
 /** The payload of the stream's `done` event — the answer arrived as deltas. */
 export interface SendMessageResult {
+  conversationId: string
   messageId: string
   assistantMessageId: string
   type: 'normal' | 'emergency'

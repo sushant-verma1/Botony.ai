@@ -44,6 +44,7 @@ vi.mock("react-hot-toast", () => ({
 function mockStream(
   text: string,
   result: Partial<{
+    conversationId: string;
     messageId: string;
     assistantMessageId: string;
     type: "normal" | "emergency";
@@ -56,6 +57,7 @@ function mockStream(
         handlers.onDelta(chunk);
       }
       return {
+        conversationId: "conv-1",
         messageId: "user-msg-1",
         assistantMessageId: "assistant-msg-1",
         type: "normal",
@@ -257,16 +259,9 @@ describe("Chat messaging", () => {
 });
 
 describe("Chat conversation management", () => {
-  it("clears messages and starts a fresh conversation when New Chat is clicked", async () => {
+  it("never calls the create-conversation API — New Chat only creates a local draft", async () => {
     const user = userEvent.setup();
     mockStream("Some reply");
-    vi.mocked(chatAPI.createConversation)
-      .mockResolvedValueOnce({
-        data: { conversationId: "conv-1", message: "ok" },
-      } as never)
-      .mockResolvedValueOnce({
-        data: { conversationId: "conv-2", message: "ok" },
-      } as never);
 
     const input = await renderChatAndWaitForReady();
     await user.type(input, "I have a sore throat");
@@ -275,10 +270,25 @@ describe("Chat conversation management", () => {
 
     await user.click(screen.getByRole("button", { name: /new conversation/i }));
 
-    await waitFor(() =>
-      expect(chatAPI.createConversation).toHaveBeenCalledTimes(2),
-    );
     expect(screen.queryByText("I have a sore throat")).not.toBeInTheDocument();
+    // Neither mounting nor clicking "New conversation" ever hits the old
+    // eager-create endpoint — a draft is purely local state.
+    expect(chatAPI.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("shows an unsaved draft row in the sidebar, which is gone once the first message is sent", async () => {
+    const user = userEvent.setup();
+    mockStream("Some reply");
+
+    await renderChatAndWaitForReady();
+    expect(screen.getByTestId("draft-conversation-row")).toBeInTheDocument();
+
+    const input = screen.getByPlaceholderText(/describe your symptoms/i);
+    await user.type(input, "I have a sore throat");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await screen.findByText("I have a sore throat");
+    expect(screen.queryByTestId("draft-conversation-row")).not.toBeInTheDocument();
   });
 
   it("loads the selected conversation's history when clicked in the sidebar", async () => {
@@ -613,6 +623,7 @@ describe("Chat streaming", () => {
         await midStream;
         handlers.onDelta("to be bacteria.");
         return {
+          conversationId: "conv-1",
           messageId: "user-msg-1",
           assistantMessageId: "assistant-msg-1",
           type: "normal" as const,
@@ -693,13 +704,101 @@ describe("Chat streaming", () => {
     await user.type(input, "see attached");
     await user.click(screen.getByRole("button", { name: /^send$/i }));
 
+    // The very first send of a session comes from a local draft: no
+    // conversationId yet, a draftId carrying the identity instead.
     await waitFor(() =>
       expect(chatAPI.streamMessage).toHaveBeenCalledWith(
-        "conv-1",
+        null,
         "see attached",
         undefined,
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          draftId: expect.any(String),
+        }),
       ),
     );
+  });
+
+  it("sends with the real conversationId, and no draftId, once a conversation already exists", async () => {
+    const user = userEvent.setup();
+    mockStream("First reply", { conversationId: "conv-1" });
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "first message");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+    await screen.findByText("First reply");
+
+    mockStream("Second reply", { conversationId: "conv-1" });
+    await user.type(input, "second message");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(chatAPI.streamMessage).toHaveBeenLastCalledWith(
+        "conv-1",
+        "second message",
+        undefined,
+        expect.objectContaining({ draftId: undefined }),
+      ),
+    );
+  });
+});
+
+describe("Chat message layout and motion", () => {
+  it("right-aligns the just-sent user message and marks it for the send animation", async () => {
+    const user = userEvent.setup();
+    mockStream("Try resting.");
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "I have a sore throat");
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    const userTurn = (
+      await screen.findByText("I have a sore throat")
+    ).closest("article")!;
+    expect(userTurn).toHaveClass("justify-end");
+    expect(userTurn).toHaveAttribute("data-sent");
+
+    // The reply is Botony's, not the user's — it never gets the send marker.
+    const assistantTurn = (
+      await screen.findByText("Try resting.")
+    ).closest("article")!;
+    expect(assistantTurn).not.toHaveClass("justify-end");
+    expect(assistantTurn).not.toHaveAttribute("data-sent");
+  });
+
+  it("does not mark history loaded from an existing conversation as just sent", async () => {
+    vi.mocked(chatAPI.getConversations).mockResolvedValue({
+      data: { conversations: [buildConversation({ id: "conv-a" })] },
+    } as never);
+    vi.mocked(chatAPI.getHistory).mockResolvedValue({
+      data: {
+        conversationId: "conv-a",
+        messages: [buildMessage({ id: "m1", content: "Old message" })],
+        hasMore: false,
+        nextCursor: null,
+      },
+    } as never);
+
+    render(<Chat />);
+    const turn = (await screen.findByText("Old message")).closest("article")!;
+    expect(turn).not.toHaveAttribute("data-sent");
+  });
+
+  it("scrolls the transcript into view when a message is sent", async () => {
+    const user = userEvent.setup();
+    const scrollSpy = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    mockStream("Try resting.");
+
+    const input = await renderChatAndWaitForReady();
+    await user.type(input, "I have a sore throat");
+    const callsBeforeSend = scrollSpy.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() =>
+      expect(scrollSpy.mock.calls.length).toBeGreaterThan(callsBeforeSend),
+    );
+    scrollSpy.mockRestore();
   });
 });

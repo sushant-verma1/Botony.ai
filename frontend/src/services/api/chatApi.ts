@@ -34,16 +34,26 @@ function parseFrame(frame: string): {
  * response before resolving, so this one endpoint uses fetch — through
  * authSession, which keeps it on the same access token and the same
  * single-flight refresh as every other call.
+ *
+ * `conversationId` is null for a local draft that has never been sent —
+ * that request hits POST /chat/message with `draftId` instead of a
+ * conversation in the URL, and the backend creates the conversation and this
+ * first message together.
  */
 async function streamMessage(
-  conversationId: string,
+  conversationId: string | null,
   message: string,
   attachmentIds: string[] | undefined,
-  handlers: MessageStreamHandlers,
+  handlers: MessageStreamHandlers & { draftId?: string },
 ): Promise<SendMessageResult> {
-  const response = await authSession.fetch(`/chat/${conversationId}/message`, {
+  const path = conversationId ? `/chat/${conversationId}/message` : '/chat/message'
+  const body = conversationId
+    ? { content: message, attachmentIds }
+    : { content: message, attachmentIds, draftId: handlers.draftId }
+
+  const response = await authSession.fetch(path, {
     method: 'POST',
-    body: JSON.stringify({ content: message, attachmentIds }),
+    body: JSON.stringify(body),
     signal: handlers.signal,
   })
 

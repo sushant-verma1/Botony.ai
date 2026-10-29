@@ -4,6 +4,9 @@ import Mark from "./Mark";
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  /** True only for the message the user just sent in this session — it
+   *  rises into place instead of the ordinary fade-in every turn gets. */
+  justSent?: boolean;
 }
 
 /** The rail on the left of every turn. Holds the mark for Botony and nothing
@@ -13,7 +16,7 @@ function Rail({ children }: { children?: React.ReactNode }) {
   return <div className="w-7 shrink-0 pt-[0.6rem]">{children}</div>;
 }
 
-function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubble({ message, justSent }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isEmergency = message.emergencyDetected;
 
@@ -44,8 +47,10 @@ function MessageBubble({ message }: MessageBubbleProps) {
 
   if (isUser) {
     return (
-      <article className="chat-turn flex gap-3 sm:gap-4">
-        <Rail />
+      <article
+        className="chat-turn flex justify-end gap-3 sm:gap-4"
+        data-sent={justSent || undefined}
+      >
         <div className="min-w-0 max-w-[54ch] rounded-2xl bg-muted px-4 py-3">
           <h3 className="sr-only">You</h3>
           <p className="chat-prose">{message.content}</p>

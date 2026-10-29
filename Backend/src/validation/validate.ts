@@ -40,6 +40,13 @@ export const createMessageSchema = Joi.object({
     .optional(),
 });
 
+// Same body as createMessageSchema plus the client's draft id, for
+// POST /chat/message — the no-conversation-yet sibling of
+// POST /chat/:chatid/message.
+export const createFirstMessageSchema = createMessageSchema.keys({
+  draftId: Joi.string().uuid().required(),
+});
+
 export const renameConversationSchema = Joi.object({
   title: Joi.string().trim().min(1).max(100).required(),
 });

@@ -12,6 +12,7 @@ import { validate } from "../middleware/validate.middleware.js";
 import {
   createConversationSchema,
   createMessageSchema,
+  createFirstMessageSchema,
   renameConversationSchema,
 } from "../validation/validate.js";
 import { chatLimiter } from "../middleware/rateLImit.middleware.js";
@@ -23,6 +24,16 @@ chatRouter.post(
   protect,
   validate(createConversationSchema),
   newChatController,
+);
+// No :chatid yet — the frontend has only a local draft. messageController
+// detects this from the missing param and creates the Conversation and this
+// first Message together, keyed by body.draftId.
+chatRouter.post(
+  "/message",
+  chatLimiter,
+  protect,
+  validate(createFirstMessageSchema),
+  messageController,
 );
 chatRouter.post(
   "/:chatid/message",

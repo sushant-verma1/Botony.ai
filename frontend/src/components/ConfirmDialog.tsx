@@ -40,7 +40,7 @@ export default function ConfirmDialog({
         if (!open && !loading) onCancel();
       }}
     >
-      <DialogContent showCloseButton={false} className="gap-5 p-5 sm:max-w-md">
+      <DialogContent showCloseButton={false} className="gap-5 p-5 sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-[17px] tracking-[-0.012em]">
             {title}
@@ -63,7 +63,7 @@ export default function ConfirmDialog({
             variant={danger ? "destructive" : "default"}
             onClick={onConfirm}
             disabled={loading}
-            className="h-9 rounded-full px-4"
+            className="h-9 rounded-full px-4 shadow-md transition-transform duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)] hover:scale-[1.2] motion-reduce:transition-none motion-reduce:hover:scale-100"
           >
             {loading && <Spinner className="size-3.5" />}
             {confirmLabel}

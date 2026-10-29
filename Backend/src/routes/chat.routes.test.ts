@@ -42,4 +42,18 @@ describe("chat routes", () => {
       expect(handlersFor(path)).toContain("protect");
     }
   });
+
+  // The no-:chatid path is the same messageController, reached before any
+  // conversation exists — it needs the same guards as its sibling.
+  it("runs the rate limiter and protect before the draft-conversation message controller", () => {
+    const handlers = handlersFor("/message");
+
+    // express-rate-limit's handler is anonymous at runtime, unlike protect
+    // and messageController, so it is asserted by position instead of name.
+    expect(handlers[0]).toBe("<anonymous>");
+    expect(handlers).toContain("protect");
+    expect(handlers.indexOf("protect")).toBeLessThan(
+      handlers.indexOf("messageController"),
+    );
+  });
 });

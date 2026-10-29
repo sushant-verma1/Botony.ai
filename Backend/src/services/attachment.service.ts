@@ -706,9 +706,10 @@ export async function validateAttachmentsForMessage(
 export async function bindAttachmentsToMessage(
   attachmentIds: string[],
   messageId: string,
+  client: Pick<typeof prisma, "attachment"> = prisma,
 ): Promise<void> {
   if (attachmentIds.length === 0) return;
-  const { count } = await prisma.attachment.updateMany({
+  const { count } = await client.attachment.updateMany({
     where: { id: { in: attachmentIds }, status: "READY", messageId: null },
     data: { messageId },
   });

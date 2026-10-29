@@ -158,6 +158,25 @@
   animation: chat-turn-in 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* The one turn the user caused directly: it rises into place rather than
+   resolving out of blur, so sending reads as an action landing, not one more
+   answer arriving. Applies only to the just-sent message (data-sent), never
+   to history or to the assistant's reply. */
+@keyframes chat-sent-in {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chat-turn[data-sent] {
+  animation: chat-sent-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Waiting. The mark's own pupils drift, one after the other, which is the
    character on the landing page glancing about while it thinks — the same
    gesture as IDLE.lookStep, at the size of a full stop. */
@@ -225,6 +244,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-turn {
+    animation: none;
+  }
+
+  /* [data-sent] outranks the bare .chat-turn rule above on specificity, so
+     it needs its own override here rather than inheriting that one. */
+  .chat-turn[data-sent] {
     animation: none;
   }
 

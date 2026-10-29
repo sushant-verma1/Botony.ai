@@ -60,9 +60,15 @@ describe("App routing", () => {
         screen.getByPlaceholderText(/describe your symptoms/i),
       ).toBeInTheDocument(),
     );
+    // A fresh, conversation-less account also renders an (unclickable) draft
+    // row with the same label as the action button, so this looks for the
+    // clickable one rather than assuming there's only one match.
+    const newConversationButtons = screen.getAllByRole("button", {
+      name: /new conversation/i,
+    });
     expect(
-      screen.getByRole("button", { name: /new conversation/i }),
-    ).toBeInTheDocument();
+      newConversationButtons.some((button) => !button.hasAttribute("disabled")),
+    ).toBe(true);
   });
 
   it("shows the landing hero (not a redirect) for an unauthenticated visitor at /", () => {

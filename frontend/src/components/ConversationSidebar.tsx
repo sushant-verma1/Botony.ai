@@ -41,6 +41,9 @@ interface ConversationSidebarProps {
   onRename: (id: string, title: string) => Promise<void>;
   creatingChat: boolean;
   disabled: boolean;
+  /** A "New conversation" clicked but never sent — nothing in the database
+   *  yet, so it has no options menu and cannot be renamed or deleted. */
+  draftConversation?: { id: string } | null;
 }
 
 export default function ConversationSidebar({
@@ -52,6 +55,7 @@ export default function ConversationSidebar({
   onRename,
   creatingChat,
   disabled,
+  draftConversation,
 }: ConversationSidebarProps) {
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -92,13 +96,14 @@ export default function ConversationSidebar({
           </SidebarGroupLabel>
 
           <SidebarGroupContent>
-            {conversations.length === 0 ? (
+            {conversations.length === 0 && !draftConversation ? (
               <p className="px-1 py-1 text-[13px] leading-relaxed text-muted-foreground">
                 Nothing here yet. Your conversations will be listed as you
                 start them.
               </p>
             ) : (
               <SidebarMenu className="gap-0.5">
+                {draftConversation && <DraftConversationItem />}
                 {conversations.map((c) => (
                   <ConversationItem
                     key={c.id}
@@ -123,6 +128,24 @@ export default function ConversationSidebar({
         </p>
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+// Never has options: there is nothing in the database yet to rename or
+// delete, and it is always the active view — a draft only exists while the
+// user is looking at it (picking another conversation drops it).
+function DraftConversationItem() {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        data-testid="draft-conversation-row"
+        isActive
+        disabled
+        className="chat-conv h-auto rounded-lg px-2.5 py-2 text-[13.5px] font-normal transition-colors data-active:font-normal disabled:opacity-100"
+      >
+        <span>New conversation</span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
   );
 }
 

@@ -47,10 +47,12 @@ export default function Chat() {
   const [loggingOut, setLoggingOut] = useState<boolean>(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState<boolean>(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // A "New conversation" click that hasn't been sent yet. Nothing is
+  // persisted until the first message goes out — see startNewChat/handleSend.
+  const [draftId, setDraftId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>(
     [],
   );
-  const [creatingChat, setCreatingChat] = useState<boolean>(false);
   const [switchingChat, setSwitchingChat] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -66,6 +68,9 @@ export default function Chat() {
   // Set once the answer starts arriving: the waiting mark gives way to the
   // turn that is filling in.
   const [streamingId, setStreamingId] = useState<string | null>(null);
+  // The id of the message that should play the send-rise animation — only
+  // ever the one the user just sent, never anything loaded from history.
+  const [justSentId, setJustSentId] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -74,6 +79,10 @@ export default function Chat() {
     prevScrollHeight: number;
     prevScrollTop: number;
   } | null>(null);
+  // Whether the transcript was scrolled near its bottom before this render —
+  // sending always pulls it down, but a reply streaming in should not yank
+  // the view away from someone reading earlier messages.
+  const atBottomRef = useRef<boolean>(true);
   const [prefs, setPrefs] = useChatPrefs();
   const { user, logout, loading: authLoading, isLoggedIn } = useAuth();
   const navigate = useNavigate();
@@ -91,6 +100,9 @@ export default function Chat() {
 
   const loadConversation = async (id: string) => {
     setSwitchingChat(true);
+    // Leaving a draft behind means leaving it unsent — there is nothing
+    // saved to come back to.
+    setDraftId(null);
     try {
       const { data } = await chatAPI.getHistory(id);
       setMessages(data.messages);
@@ -140,20 +152,22 @@ export default function Chat() {
     if (container.scrollTop < 100 && hasMore && !loadingOlder) {
       loadOlderMessages();
     }
+
+    atBottomRef.current =
+      container.scrollHeight - container.scrollTop - container.clientHeight <
+      120;
   };
 
-  const startNewChat = async () => {
-    setCreatingChat(true);
-    try {
-      const { data } = await chatAPI.createConversation();
-      setConversationId(data.conversationId);
-      setMessages([]);
-      await fetchConversations();
-    } catch {
-      toast.error("Could not start conversation");
-    } finally {
-      setCreatingChat(false);
-    }
+  // Nothing is created in the database here — just a local draft. The
+  // Conversation row is only written once a message is actually sent (see
+  // handleSend), keyed by this id so a retried send can't create two.
+  const startNewChat = () => {
+    setConversationId(null);
+    setDraftId(crypto.randomUUID());
+    setMessages([]);
+    setAttachments([]);
+    setHasMore(false);
+    setNextCursor(null);
   };
 
   const handleSelectConversation = (id: string) => {
@@ -188,7 +202,7 @@ export default function Chat() {
         if (list.length > 0) {
           await loadConversation(list[0].id);
         } else {
-          await startNewChat();
+          startNewChat();
         }
       }
     } catch {
@@ -207,7 +221,7 @@ export default function Chat() {
       if (list.length > 0) {
         await loadConversation(list[0].id);
       } else {
-        await startNewChat();
+        startNewChat();
       }
     };
 
@@ -235,6 +249,10 @@ export default function Chat() {
       isPrependingRef.current = false;
       return;
     }
+    // Sending sets atBottomRef before appending, so a sent message always
+    // scrolls into view; a streaming delta only does if the reader was
+    // already down here, so scrolling up to reread history stays put.
+    if (!atBottomRef.current) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
@@ -301,7 +319,7 @@ export default function Chat() {
 
   const handleSend = async () => {
     const trimmed = input.trim();
-    if (!trimmed || !conversationId) return;
+    if (!trimmed || (!conversationId && !draftId)) return;
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -325,6 +343,10 @@ export default function Chat() {
     const controller = new AbortController();
     streamAbortRef.current = controller;
 
+    // Sending is always "the user just did something" — pull the view down
+    // to meet it regardless of where they were reading.
+    atBottomRef.current = true;
+    setJustSentId(userMessage.id);
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setLoading(true);
@@ -336,6 +358,7 @@ export default function Chat() {
         attachmentIds.length > 0 ? attachmentIds : undefined,
         {
           signal: controller.signal,
+          draftId: conversationId ? undefined : (draftId ?? undefined),
           onStart: () => {
             setStreamingId(placeholderId);
             setMessages((prev) => [
@@ -373,6 +396,12 @@ export default function Chat() {
             : m,
         ),
       );
+      // The draft becomes a real, persisted conversation the moment its
+      // first message succeeds.
+      if (!conversationId) {
+        setConversationId(result.conversationId);
+        setDraftId(null);
+      }
       setAttachments([]);
       fetchConversations();
     } catch (err) {
@@ -421,8 +450,9 @@ export default function Chat() {
         onNewChat={startNewChat}
         onRequestDelete={setDeleteTargetId}
         onRename={handleRenameConversation}
-        creatingChat={creatingChat}
-        disabled={creatingChat || switchingChat || loading}
+        creatingChat={false}
+        disabled={switchingChat || loading}
+        draftConversation={draftId ? { id: draftId } : null}
       />
 
       <SidebarInset className="min-w-0 overflow-hidden">
@@ -455,13 +485,17 @@ export default function Chat() {
 
               {messages.length === 0 && !switchingChat && (
                 <EmptyTranscript
-                  disabled={loading || switchingChat || !conversationId}
+                  disabled={loading || switchingChat || (!conversationId && !draftId)}
                   onPick={setInput}
                 />
               )}
 
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  justSent={msg.id === justSentId}
+                />
               ))}
 
               {loading && !streamingId && (
@@ -492,7 +526,7 @@ export default function Chat() {
           onFilesPicked={handleFilesPicked}
           attachments={attachments}
           onRemoveAttachment={handleRemoveAttachment}
-          disabled={loading || switchingChat || !conversationId}
+          disabled={loading || switchingChat || (!conversationId && !draftId)}
           sending={loading}
           enterSends={prefs.enterSends}
           maxLength={MAX_MESSAGE_LENGTH}
