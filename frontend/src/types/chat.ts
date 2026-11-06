@@ -11,10 +11,36 @@ export interface SendMessageResult {
   type: 'normal' | 'emergency'
 }
 
+/** A pending, patient-confirmed action returned by the medication agent. */
+export interface MedicationScheduleProposal {
+  action: { id: string; expiresAt: string }
+  draft: {
+    medicationId?: string
+    newMedication?: {
+      name: string
+      strength?: string
+      form?: string
+    }
+    times: string[]
+    timezone: string
+    startsOn: string
+    endsOn?: string
+  }
+  confirmationToken: string
+}
+export interface MedicineScheduleMutationProposal {
+  action: { id: string; expiresAt: string }
+  confirmationToken: string
+  operation: 'updateMedicineSchedule' | 'deleteMedicineSchedule'
+}
+
 export interface MessageStreamHandlers {
   /** Fired once, when the first visible text is about to arrive. */
   onStart?: (provider: string) => void
   onDelta: (text: string) => void
+  /** A schedule may only be created after the patient explicitly confirms it. */
+  onMedicationScheduleProposal?: (proposal: MedicationScheduleProposal) => void
+  onMedicineScheduleMutationProposal?: (proposal: MedicineScheduleMutationProposal) => void
   signal?: AbortSignal
 }
 
@@ -55,6 +81,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   emergencyDetected: boolean
   createdAt: string
+  medicationScheduleProposal?: MedicationScheduleProposal
+  medicineScheduleMutationProposal?: MedicineScheduleMutationProposal
 }
 
 export interface HistoryResponse {

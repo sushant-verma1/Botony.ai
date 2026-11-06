@@ -6,6 +6,7 @@
   "scripts": {
     "start": "tsx server.ts",
     "server": "nodemon --exec tsx server.ts",
+    "worker:reminders": "tsx src/workers/reminder.worker.ts",
     "build": "tsc",
     "lint": "eslint .",
     "test": "vitest run",
@@ -14,7 +15,8 @@
     "migrate:verify": "tsx scripts/verify-migrations.ts",
     "db:explain": "tsx scripts/explain-indexes.ts",
     "verify:lifecycle": "tsx scripts/verify-attachment-lifecycle.ts",
-    "verify:sentry": "tsx scripts/verify-sentry-scrubbing.ts"
+    "verify:sentry": "tsx scripts/verify-sentry-scrubbing.ts",
+    "verify:reminders": "tsx scripts/verify-reminder-delivery.ts"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +28,7 @@
     "@sentry/node": "^10.73.0",
     "axios": "^1.13.6",
     "bcryptjs": "^3.0.3",
+    "bullmq": "^5.66.1",
     "cloudinary": "^2.11.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -36,10 +39,12 @@
     "helmet": "^8.1.0",
     "joi": "^18.1.1",
     "jsonwebtoken": "^9.0.3",
+    "ioredis": "^5.8.2",
     "morgan": "^1.10.1",
     "openai": "^7.10.0",
     "pg": "^8.20.0",
     "unpdf": "^1.8.1",
+    "web-push": "^3.6.7",
     "winston": "^3.19.0"
   },
   "devDependencies": {
@@ -52,6 +57,7 @@
     "@types/morgan": "^1.9.10",
     "@types/node": "^25.5.0",
     "@types/pg": "^8.20.0",
+    "@types/web-push": "^3.6.4",
     "eslint": "^10.1.0",
     "globals": "^17.12.0",
     "install": "^0.13.0",

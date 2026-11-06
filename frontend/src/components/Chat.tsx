@@ -4,13 +4,23 @@ import toast from "react-hot-toast";
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
 import { chatAPI } from "../services/api/chatApi";
+import { agentAPI } from "../services/api/agentApi";
+import { reminderAPI } from "../services/api/reminderApi";
+import { authSession } from "../services/api/api";
+import { registerServiceWorker } from "../services/browserPush";
+import { reportAPI, type MedicalReport } from "../services/api/reportApi";
 import {
   attachmentAPI,
   mimeToKind,
   MAX_IMAGE_BYTES,
   MAX_PDF_BYTES,
 } from "../services/api/attachmentApi";
-import type { ChatMessage, ConversationSummary } from "../types/chat";
+import type {
+  ChatMessage,
+  ConversationSummary,
+  MedicationScheduleProposal,
+  MedicineScheduleMutationProposal,
+} from "../types/chat";
 import MessageBubble from "./MessageBubble";
 import Mark from "./Mark";
 import Spinner from "./Spinner";
@@ -19,6 +29,10 @@ import ConfirmDialog from "./ConfirmDialog";
 import ChatComposer from "./chat/ChatComposer";
 import type { PendingAttachment } from "./chat/ChatComposer";
 import ChatTopBar from "./chat/ChatTopBar";
+import MedicationScheduleDialog from "./chat/MedicationScheduleDialog";
+import MedicationManagerDialog from "./chat/MedicationManagerDialog";
+import HealthTrackerDialog from "./chat/HealthTrackerDialog";
+import CareCircleDialog from "./chat/CareCircleDialog";
 import {
   ProfileDialog,
   SafetyDialog,
@@ -65,13 +79,22 @@ export default function Chat() {
   const [openDialog, setOpenDialog] = useState<
     "profile" | "settings" | "safety" | null
   >(null);
+  const [showMedicationSchedule, setShowMedicationSchedule] = useState(false);
+  const [showMedicationManager, setShowMedicationManager] = useState(false);
+  const [showHealthTracker, setShowHealthTracker] = useState(false);
+  const [showCareCircle, setShowCareCircle] = useState(false);
   // Set once the answer starts arriving: the waiting mark gives way to the
   // turn that is filling in.
   const [streamingId, setStreamingId] = useState<string | null>(null);
+  const [confirmingScheduleActionId, setConfirmingScheduleActionId] = useState<string | null>(null);
   // The id of the message that should play the send-rise animation — only
   // ever the one the user just sent, never anything loaded from history.
   const [justSentId, setJustSentId] = useState<string | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
+  // Unread reminders stay in the inbox until the patient acts on them. This
+  // set prevents the polling loop from stacking duplicate toasts during one
+  // open session without marking a reminder read behind the patient's back.
+  const shownReminderNotificationsRef = useRef(new Set<string>());
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const isPrependingRef = useRef<boolean>(false);
@@ -228,6 +251,125 @@ export default function Chat() {
     init();
   }, [authLoading, isLoggedIn]);
 
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    let cancelled = false;
+
+    const showReminder = (notification: {
+      id: string;
+      type: "MEDICATION_REMINDER" | "CAREGIVER_MEDICATION_REMINDER" | "REFILL_ALERT";
+      title: string;
+      body: string;
+      reminderJobId: string | null;
+    }) => {
+      toast((toastItem) => {
+        const act = async (status: "TAKEN" | "SKIPPED") => {
+          if (!notification.reminderJobId) return;
+          try {
+            await reminderAPI.logDose(notification.reminderJobId, status);
+            toast.dismiss(toastItem.id);
+          } catch {
+            toast.error("Could not record this dose");
+          }
+        };
+
+        return (
+          <div className="flex min-w-72 flex-col gap-2">
+            <p className="font-medium">{notification.title}</p>
+            <p className="text-sm text-muted-foreground">{notification.body}</p>
+            <div className="flex gap-2 pt-1 text-sm">
+              {notification.type === "MEDICATION_REMINDER" && notification.reminderJobId && <>
+              <button
+                type="button"
+                className="rounded-md bg-foreground px-2.5 py-1 text-background"
+                onClick={() => void act("TAKEN")}
+              >
+                Taken
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-border px-2.5 py-1"
+                onClick={() => void act("SKIPPED")}
+              >
+                Skipped
+              </button>
+              </>}
+              <button
+                type="button"
+                className="px-1 text-muted-foreground"
+                onClick={async () => {
+                  try {
+                    await reminderAPI.markNotificationRead(notification.id);
+                    toast.dismiss(toastItem.id);
+                  } catch {
+                    toast.error("Could not dismiss reminder");
+                  }
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        );
+      }, { duration: Infinity });
+    };
+
+    const handleNotification = (notification: {
+      id: string;
+      type: "MEDICATION_REMINDER" | "CAREGIVER_MEDICATION_REMINDER" | "REFILL_ALERT";
+      title: string;
+      body: string;
+      reminderJobId: string | null;
+    }) => {
+      if (shownReminderNotificationsRef.current.has(notification.id)) return;
+      shownReminderNotificationsRef.current.add(notification.id);
+      showReminder(notification);
+    };
+
+    const loadUnreadOnce = async () => {
+      try {
+        const { data } = await reminderAPI.getUnreadNotifications();
+        if (cancelled) return;
+        for (const notification of data.notifications) handleNotification(notification);
+      } catch {
+        // SSE reconnects below; a missed catch-up response is non-fatal.
+      }
+    };
+
+    const connect = async () => {
+      try {
+        const response = await authSession.fetch("/notifications/stream", { headers: { Accept: "text/event-stream" } });
+        if (!response.ok || !response.body) throw new Error("Notification stream unavailable");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!cancelled) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop() ?? "";
+          for (const frame of frames) {
+            const event = /^event: (.+)$/m.exec(frame)?.[1];
+            const data = /^data: (.+)$/m.exec(frame)?.[1];
+            if (event !== "notification" || !data) continue;
+            try { handleNotification(JSON.parse(data)); } catch { /* ignore malformed frame */ }
+          }
+        }
+      } catch {
+        // The next connection attempt is silent; chat remains usable offline.
+      }
+      if (!cancelled) window.setTimeout(() => void connect(), 3_000);
+    };
+
+    void loadUnreadOnce();
+    void registerServiceWorker();
+    void connect();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn]);
+
   // Leaving the page stops the answer being generated server-side too.
   useEffect(() => {
     return () => streamAbortRef.current?.abort();
@@ -272,7 +414,12 @@ export default function Chat() {
       const placeholderId = crypto.randomUUID();
       setAttachments((prev) => [
         ...prev,
-        { attachmentId: placeholderId, name: file.name, status: "uploading" },
+        {
+          attachmentId: placeholderId,
+          name: file.name,
+          kind,
+          status: "uploading",
+        },
       ]);
 
       try {
@@ -314,6 +461,51 @@ export default function Chat() {
     } catch {
       // Best-effort cleanup; the row is orphaned but never bound to a
       // message, so it carries no information and is swept later.
+    }
+  };
+
+  const reportMessage = (report: MedicalReport): string => {
+    const lines = [report.explanation ?? "The report could not be explained."];
+    if (report.observations.length > 0) {
+      lines.push(
+        "\nResults extracted from the report:",
+        ...report.observations.map((observation) => {
+          const unit = observation.unit ? ` ${observation.unit}` : "";
+          const range = observation.referenceRange
+            ? ` (report range: ${observation.referenceRange})`
+            : "";
+          return `• ${observation.name}: ${observation.value}${unit}${range}`;
+        }),
+      );
+    }
+    if (report.questions?.length) {
+      lines.push("\nQuestions for your clinician:", ...report.questions.map((q) => `• ${q}`));
+    }
+    if (report.uncertainties?.length) {
+      lines.push("\nUncertainties:", ...report.uncertainties.map((item) => `• ${item}`));
+    }
+    return lines.join("\n");
+  };
+
+  const handleAnalyzeReport = async (attachmentId: string) => {
+    try {
+      const { data } = await reportAPI.analyze(attachmentId);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: reportMessage(data.report),
+          emergencyDetected: false,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+      toast.success("Report explanation ready");
+    } catch (error) {
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.message || "Could not read this report"
+        : "Could not read this report";
+      toast.error(message);
     }
   };
 
@@ -380,6 +572,24 @@ export default function Chat() {
               ),
             );
           },
+          onMedicationScheduleProposal: (proposal) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === placeholderId
+                  ? { ...m, medicationScheduleProposal: proposal }
+                  : m,
+              ),
+            );
+          },
+          onMedicineScheduleMutationProposal: (proposal) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === placeholderId
+                  ? { ...m, medicineScheduleMutationProposal: proposal }
+                  : m,
+              ),
+            );
+          },
         },
       );
 
@@ -424,6 +634,62 @@ export default function Chat() {
     }
   };
 
+  const handleConfirmMedicationSchedule = async (
+    messageId: string,
+    proposal: MedicationScheduleProposal,
+  ) => {
+    setConfirmingScheduleActionId(proposal.action.id);
+    try {
+      await agentAPI.confirmMedicationSchedule(
+        proposal.action.id,
+        proposal.confirmationToken,
+      );
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                content: "Medication reminder schedule created.",
+                medicationScheduleProposal: undefined,
+              }
+            : message,
+        ),
+      );
+      toast.success("Medication reminder schedule created");
+    } catch (error) {
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.message || "Could not create the schedule"
+        : "Could not create the schedule";
+      toast.error(message);
+    } finally {
+      setConfirmingScheduleActionId(null);
+    }
+  };
+
+  const handleConfirmMedicineScheduleMutation = async (
+    messageId: string,
+    proposal: MedicineScheduleMutationProposal,
+  ) => {
+    setConfirmingScheduleActionId(proposal.action.id);
+    try {
+      await agentAPI.confirmMedicineScheduleMutation(proposal.action.id, proposal.confirmationToken);
+      const completed = proposal.operation === "deleteMedicineSchedule"
+        ? "Medicine reminder schedule deleted."
+        : "Medicine reminder schedule updated.";
+      setMessages((prev) => prev.map((message) => message.id === messageId
+        ? { ...message, content: completed, medicineScheduleMutationProposal: undefined }
+        : message));
+      toast.success(completed);
+    } catch (error) {
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.message || "Could not apply the schedule change"
+        : "Could not apply the schedule change";
+      toast.error(message);
+    } finally {
+      setConfirmingScheduleActionId(null);
+    }
+  };
+
   const handleLogout = async () => {
     setShowLogoutConfirm(false);
     setLoggingOut(true);
@@ -463,6 +729,10 @@ export default function Chat() {
           onOpenProfile={() => setOpenDialog("profile")}
           onOpenSettings={() => setOpenDialog("settings")}
           onOpenSafety={() => setOpenDialog("safety")}
+          onOpenMedicationSchedule={() => setShowMedicationSchedule(true)}
+          onOpenMedicationManager={() => setShowMedicationManager(true)}
+          onOpenHealthTracker={() => setShowHealthTracker(true)}
+          onOpenCareCircle={() => setShowCareCircle(true)}
           onRequestLogout={() => setShowLogoutConfirm(true)}
           loggingOut={loggingOut}
         />
@@ -495,6 +765,16 @@ export default function Chat() {
                   key={msg.id}
                   message={msg}
                   justSent={msg.id === justSentId}
+                  onConfirmMedicationSchedule={(proposal) =>
+                    void handleConfirmMedicationSchedule(msg.id, proposal)
+                  }
+                  onConfirmMedicineScheduleMutation={(proposal) =>
+                    void handleConfirmMedicineScheduleMutation(msg.id, proposal)
+                  }
+                  confirmingMedicationSchedule={
+                    confirmingScheduleActionId === msg.medicationScheduleProposal?.action.id
+                    || confirmingScheduleActionId === msg.medicineScheduleMutationProposal?.action.id
+                  }
                 />
               ))}
 
@@ -526,6 +806,7 @@ export default function Chat() {
           onFilesPicked={handleFilesPicked}
           attachments={attachments}
           onRemoveAttachment={handleRemoveAttachment}
+          onAnalyzeAttachment={handleAnalyzeReport}
           disabled={loading || switchingChat || (!conversationId && !draftId)}
           sending={loading}
           enterSends={prefs.enterSends}
@@ -546,6 +827,22 @@ export default function Chat() {
       <SafetyDialog
         open={openDialog === "safety"}
         onOpenChange={(open) => setOpenDialog(open ? "safety" : null)}
+      />
+      <MedicationScheduleDialog
+        open={showMedicationSchedule}
+        onOpenChange={setShowMedicationSchedule}
+      />
+      <MedicationManagerDialog
+        open={showMedicationManager}
+        onOpenChange={setShowMedicationManager}
+      />
+      <HealthTrackerDialog
+        open={showHealthTracker}
+        onOpenChange={setShowHealthTracker}
+      />
+      <CareCircleDialog
+        open={showCareCircle}
+        onOpenChange={setShowCareCircle}
       />
 
       {showLogoutConfirm && (

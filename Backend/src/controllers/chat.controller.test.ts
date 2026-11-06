@@ -27,6 +27,13 @@ vi.mock("../config/db.js", () => ({
       findFirst: vi.fn(),
       findUnique: vi.fn(),
     },
+    auditEvent: {
+      create: vi.fn(),
+    },
+    agentRun: {
+      findFirst: vi.fn(),
+      updateMany: vi.fn(),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -59,6 +66,53 @@ vi.mock("../services/attachment.service.js", async (importOriginal) => {
   };
 });
 
+const { mockBuildVerifiedMemoryContext } = vi.hoisted(() => ({
+  mockBuildVerifiedMemoryContext: vi.fn(),
+}));
+
+vi.mock("../services/memory.service.js", () => ({
+  buildVerifiedMemoryContext: mockBuildVerifiedMemoryContext,
+}));
+
+const { mockDraftMedicationScheduleFromRequest } = vi.hoisted(() => ({
+  mockDraftMedicationScheduleFromRequest: vi.fn(),
+}));
+
+const { mockSelectAgentTool, mockHasDeterministicMedicationScheduleIntent } = vi.hoisted(() => ({
+  mockSelectAgentTool: vi.fn(),
+  mockHasDeterministicMedicationScheduleIntent: vi.fn(),
+}));
+
+vi.mock("../services/agent/medication-schedule-agent.service.js", () => ({
+  AgentActionError: class AgentActionError extends Error {
+    constructor(message: string, readonly status: number) {
+      super(message);
+    }
+  },
+  draftMedicationScheduleFromRequest: mockDraftMedicationScheduleFromRequest,
+}));
+
+vi.mock("../services/agent/tool-router.service.js", () => ({
+  selectAgentTool: mockSelectAgentTool,
+  hasDeterministicMedicationScheduleIntent: mockHasDeterministicMedicationScheduleIntent,
+}));
+
+const { mockDiscoverToolCall } = vi.hoisted(() => ({
+  mockDiscoverToolCall: vi.fn(),
+}));
+
+vi.mock("../services/agent/tool-discovery.service.js", () => ({
+  discoverToolCall: mockDiscoverToolCall,
+}));
+
+vi.mock("../services/medication.service.js", () => ({
+  MedicationError: class MedicationError extends Error {
+    constructor(message: string, readonly status: number) {
+      super(message);
+    }
+  },
+}));
+
 import { prisma } from "../config/db.js";
 import {
   AIServiceError,
@@ -79,7 +133,7 @@ import {
 // leaking a field the controller must not forward.
 function aiStream(text: string, extra: Record<string, unknown> = {}) {
   return (async function* () {
-    yield { type: "start", provider: "groq", model: "qwen/qwen3.6-27b" };
+    yield { type: "start", provider: "groq", model: "qwen/qwen3.8-27b" };
     for (const part of text.match(/[\s\S]{1,8}/g) ?? []) {
       yield { type: "delta", text: part };
     }
@@ -87,7 +141,7 @@ function aiStream(text: string, extra: Record<string, unknown> = {}) {
       type: "done",
       text,
       provider: "groq",
-      model: "qwen/qwen3.6-27b",
+      model: "qwen/qwen3.8-27b",
       retries: 0,
       chunks: 1,
       firstChunkMs: 1,
@@ -114,6 +168,7 @@ function buildReq(overrides: Record<string, unknown> = {}): any {
     query: {},
     body: {},
     user: { userId: "user-1" },
+    get: vi.fn(() => undefined),
     ...overrides,
   };
 }
@@ -128,12 +183,20 @@ beforeEach(() => {
   vi.mocked(prisma.message.findMany).mockReset();
   vi.mocked(prisma.message.findFirst).mockReset();
   vi.mocked(prisma.message.findUnique).mockReset().mockResolvedValue(null);
+  vi.mocked(prisma.auditEvent.create).mockReset().mockResolvedValue({} as never);
+  vi.mocked(prisma.agentRun.findFirst).mockReset().mockResolvedValue(null as never);
+  vi.mocked(prisma.agentRun.updateMany).mockReset().mockResolvedValue({ count: 0 } as never);
   vi.mocked(prisma.$transaction).mockReset();
   vi.mocked(prisma.$transaction).mockImplementation(((cb: any) =>
     cb(prisma)) as never);
   mockStreamResponse.mockReset();
   mockValidateAttachmentsForMessage.mockReset().mockResolvedValue([]);
   mockBindAttachmentsToMessage.mockReset().mockResolvedValue(undefined);
+  mockBuildVerifiedMemoryContext.mockReset().mockResolvedValue(undefined);
+  mockDraftMedicationScheduleFromRequest.mockReset();
+  mockSelectAgentTool.mockReset().mockResolvedValue({ toolName: "none" });
+  mockHasDeterministicMedicationScheduleIntent.mockReset().mockReturnValue(false);
+  mockDiscoverToolCall.mockReset().mockResolvedValue(null);
 });
 
 describe("newChatController", () => {
@@ -481,6 +544,27 @@ describe("messageController", () => {
       expect(assistantWrite.content).toBe("Here is some health info.");
     });
 
+    it("passes verified patient memory to the AI service as server context", async () => {
+      mockNormalFlow();
+      mockBuildVerifiedMemoryContext.mockResolvedValue(
+        "VERIFIED_PATIENT_CONTEXT_START\nVERIFIED_PATIENT_CONTEXT_END",
+      );
+
+      const req = buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "Does this interact with my allergy?" },
+      } as never);
+
+      await messageController(req, createMockRes());
+
+      expect(mockStreamResponse).toHaveBeenCalledWith(
+        expect.any(Array),
+        [],
+        expect.any(AbortSignal),
+        "VERIFIED_PATIENT_CONTEXT_START\nVERIFIED_PATIENT_CONTEXT_END",
+      );
+    });
+
     it("flips conversation status from 'emergency' back to 'ongoing'", async () => {
       mockNormalFlow({ conversationStatus: "emergency" });
 
@@ -555,6 +639,169 @@ describe("messageController", () => {
     });
   });
 
+  describe("medication schedule agent flow", () => {
+    it("keeps a successful AUTO clarification instead of treating no tool call as a refusal", async () => {
+      vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+        userId: "user-1",
+        status: "ongoing",
+      } as never);
+      vi.mocked(prisma.message.create)
+        .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+        .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+      mockDiscoverToolCall.mockResolvedValue({
+        text: "Could you clarify whether you want a vitamin D reminder?",
+        provider: "groq",
+      });
+
+      const res = createMockRes();
+      await messageController(buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "scedule vitamin d" },
+      }), res);
+
+      expect(mockStreamResponse).not.toHaveBeenCalled();
+      expect(sseFrames(res).map((frame) => frame.event)).toEqual(["start", "delta", "done"]);
+      expect(sseFrames(res)[1].data.text).toContain("vitamin D reminder");
+    });
+
+    it("keeps a pending vitamin D schedule across a context-only follow-up", async () => {
+      vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+        userId: "user-1",
+        status: "ongoing",
+      } as never);
+      vi.mocked(prisma.message.findMany)
+        .mockResolvedValueOnce([] as never)
+        .mockResolvedValueOnce([
+          {
+            role: "assistant",
+            content: "To set up this medication reminder, I still need clarification: What time and start date should I use?",
+          },
+          { role: "user", content: "Schedule the vitamin D" },
+        ] as never);
+      vi.mocked(prisma.message.create)
+        .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+        .mockResolvedValueOnce({ id: "assistant-msg-1" } as never)
+        .mockResolvedValueOnce({ id: "user-msg-2" } as never)
+        .mockResolvedValueOnce({ id: "assistant-msg-2" } as never);
+      mockDiscoverToolCall
+        .mockResolvedValueOnce({
+          tool: { name: "createMedicineSchedule" },
+          arguments: { request: "Schedule the vitamin D" },
+          provider: "gemini",
+        })
+        .mockResolvedValueOnce({
+          tool: { name: "createMedicineSchedule" },
+          arguments: { request: "Schedule vitamin D\nStart from today 1 PM" },
+          provider: "groq",
+        });
+      mockHasDeterministicMedicationScheduleIntent.mockReturnValue(false);
+      mockDraftMedicationScheduleFromRequest
+        .mockResolvedValueOnce({
+          kind: "clarification",
+          question: "What time and start date should I use?",
+        })
+        .mockResolvedValueOnce({
+          kind: "proposal",
+          action: { id: "action-1", expiresAt: new Date("2026-11-06T12:00:00.000Z") },
+          draft: {
+            newMedication: { name: "vitamin D" },
+            times: ["13:00"],
+            timezone: "Asia/Kolkata",
+            startsOn: "2026-11-06",
+          },
+          confirmationToken: "a".repeat(64),
+        });
+
+      await messageController(buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "Schedule the vitamin D" },
+        get: vi.fn(() => "Asia/Kolkata"),
+      }), createMockRes());
+      const followUpResponse = createMockRes();
+      await messageController(buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "Start from today 1 PM" },
+        get: vi.fn(() => "Asia/Kolkata"),
+      }), followUpResponse);
+
+      // Groq receives the same persisted context and selects the active
+      // action without a local keyword or typo matcher.
+      expect(mockDraftMedicationScheduleFromRequest).toHaveBeenNthCalledWith(
+        2,
+        "user-1",
+        "Schedule the vitamin D\nStart from today 1 PM",
+        expect.objectContaining({
+          conversationId: "conv-1",
+          temporalContext: expect.objectContaining({ timezone: "Asia/Kolkata" }),
+        }),
+      );
+      expect(mockStreamResponse).not.toHaveBeenCalled();
+      expect(sseFrames(followUpResponse).map((frame) => frame.event)).toEqual([
+        "start",
+        "delta",
+        "medication_schedule_proposal",
+        "done",
+      ]);
+    });
+
+    it("streams a confirmation-card payload and skips general chat generation", async () => {
+      vi.mocked(prisma.conversation.findUnique).mockResolvedValue({
+        userId: "user-1",
+        status: "ongoing",
+      } as never);
+      vi.mocked(prisma.message.create)
+        .mockResolvedValueOnce({ id: "user-msg-1" } as never)
+        .mockResolvedValueOnce({ id: "assistant-msg-1" } as never);
+      mockDraftMedicationScheduleFromRequest.mockResolvedValue({
+        kind: "proposal",
+        action: {
+          id: "action-1",
+          expiresAt: new Date("2026-11-03T18:00:00.000Z"),
+        },
+        draft: {
+          medicationId: "medication-1",
+          times: ["22:57"],
+          timezone: "Asia/Kolkata",
+          startsOn: "2026-11-03",
+        },
+        confirmationToken: "a".repeat(64),
+      });
+      mockDiscoverToolCall.mockResolvedValue({
+        tool: { name: "createMedicineSchedule" },
+        arguments: { request: "Schedule paracetamol daily at 10:57 PM" },
+        provider: "gemini",
+      });
+
+      const req = buildReq({
+        params: { chatid: "conv-1" },
+        body: { content: "Schedule paracetamol daily at 10:57 PM" },
+      } as never);
+      const res = createMockRes();
+
+      await messageController(req, res);
+
+      expect(mockDraftMedicationScheduleFromRequest).toHaveBeenCalledWith(
+        "user-1",
+        "Schedule paracetamol daily at 10:57 PM",
+      expect.objectContaining({ conversationId: "conv-1", temporalContext: expect.any(Object) }),
+      );
+      expect(mockStreamResponse).not.toHaveBeenCalled();
+      const frames = sseFrames(res);
+      expect(frames.map((frame) => frame.event)).toEqual([
+        "start",
+        "delta",
+        "medication_schedule_proposal",
+        "done",
+      ]);
+      expect(frames[2].data).toMatchObject({
+        action: { id: "action-1" },
+        draft: { times: ["22:57"], timezone: "Asia/Kolkata" },
+        confirmationToken: "a".repeat(64),
+      });
+    });
+
+  });
+
   describe("model reasoning is never exposed (patient safety)", () => {
     const REASONING = "Chain of thought: weigh meningitis vs tension headache.";
     const ANSWER = "Here is some health info.";
@@ -580,7 +827,7 @@ describe("messageController", () => {
         text: ANSWER,
         reasoning: REASONING,
         provider: "groq",
-        model: "qwen/qwen3.6-27b",
+        model: "qwen/qwen3.8-27b",
       });
 
       const req = buildReq({
@@ -616,7 +863,7 @@ describe("messageController", () => {
         text: ANSWER,
         reasoning: REASONING,
         provider: "groq",
-        model: "qwen/qwen3.6-27b",
+        model: "qwen/qwen3.8-27b",
       });
 
       const req = buildReq({

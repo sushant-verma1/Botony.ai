@@ -10,6 +10,7 @@ import { Textarea } from "../ui/textarea";
 export interface PendingAttachment {
   attachmentId: string;
   name: string;
+  kind: "IMAGE" | "DOCUMENT";
   status: "uploading" | "ready" | "error";
   error?: string;
 }
@@ -21,6 +22,7 @@ interface ChatComposerProps {
   onFilesPicked: (files: File[]) => void;
   attachments: PendingAttachment[];
   onRemoveAttachment: (attachmentId: string) => void;
+  onAnalyzeAttachment: (attachmentId: string) => void;
   /** True while a message is in flight, a conversation is loading, or there
    *  is no conversation to post into. */
   disabled: boolean;
@@ -36,6 +38,7 @@ export default function ChatComposer({
   onFilesPicked,
   attachments,
   onRemoveAttachment,
+  onAnalyzeAttachment,
   disabled,
   sending,
   enterSends,
@@ -80,6 +83,15 @@ export default function ChatComposer({
               >
                 {a.status === "uploading" && <Spinner className="size-3" />}
                 <span className="max-w-[22ch] truncate">{a.name}</span>
+                {a.kind === "DOCUMENT" && a.status === "ready" && (
+                  <button
+                    type="button"
+                    onClick={() => onAnalyzeAttachment(a.attachmentId)}
+                    className="rounded px-1 font-medium text-foreground hover:underline"
+                  >
+                    Read
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onRemoveAttachment(a.attachmentId)}

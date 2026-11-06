@@ -301,6 +301,8 @@ describe("streamResponse", () => {
       messages,
       [],
       controller.signal,
+      undefined,
+      expect.objectContaining({ referenceUtc: expect.any(String) }),
     );
   });
 });

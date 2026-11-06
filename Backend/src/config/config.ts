@@ -27,11 +27,12 @@ const refreshTokenSecret = getEnv("REFRESH_TOKEN_SECRET");
 const groqApiKey = getEnv("GROQ_API_KEY");
 const groqModel = getOptionalEnv(
   "GROQ_MODEL",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "qwen/qwen3.8-27b",
 );
 
 const geminiApiKey = getEnv("GEMINI_API_KEY");
 const geminiModel = getOptionalEnv("GEMINI_MODEL", "gemini-3.6-flash");
+const geminiEmbeddingModel = getOptionalEnv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001");
 
 const cloudinaryCloudName = getEnv("CLOUDINARY_CLOUD_NAME");
 const cloudinaryApiKey = getEnv("CLOUDINARY_API_KEY");
@@ -57,6 +58,21 @@ const attachmentCleanupIntervalMs = getIntEnv(
   15 * 60 * 1000,
 );
 
+// This keeps a rolling reminder horizon in the database. Delivery itself is
+// handled separately so a scheduled job is never marked sent prematurely.
+const medicationScheduleMaterializationIntervalMs = getIntEnv(
+  "MEDICATION_SCHEDULE_MATERIALIZATION_INTERVAL_MS",
+  60 * 60 * 1000,
+);
+
+// Redis is infrastructure for BullMQ and cross-instance notification fan-out;
+// Postgres remains the durable reminder and notification store.
+const redisUrl = getOptionalEnv("REDIS_URL", "redis://localhost:6379");
+
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || "";
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || "";
+const vapidSubject = process.env.VAPID_SUBJECT || "";
+
 // Optional: the app must keep working with no Sentry configured at all.
 const sentryDsn = process.env.SENTRY_DSN || "";
 const sentryEnvironment = getOptionalEnv(
@@ -72,6 +88,7 @@ export {
   groqModel,
   geminiApiKey,
   geminiModel,
+  geminiEmbeddingModel,
   cloudinaryCloudName,
   cloudinaryApiKey,
   cloudinaryApiSecret,
@@ -80,6 +97,11 @@ export {
   clamavTimeoutMs,
   allowUnscannedUploads,
   attachmentCleanupIntervalMs,
+  medicationScheduleMaterializationIntervalMs,
+  redisUrl,
+  vapidPublicKey,
+  vapidPrivateKey,
+  vapidSubject,
   isProduction,
   sentryDsn,
   sentryEnvironment,

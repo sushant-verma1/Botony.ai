@@ -33,6 +33,13 @@ let handlers: SessionHandlers | null = null;
 // starts a fresh one.
 let refreshRequest: Promise<RefreshResponse> | null = null;
 
+// The server owns the clock; the browser supplies only the IANA timezone so
+// relative dates are interpreted in the patient's intended local calendar.
+function clientTimezone(): string | undefined {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return timezone || undefined;
+}
+
 function refresh(): Promise<RefreshResponse> {
   refreshRequest ??= api
     .post<RefreshResponse>(REFRESH_PATH)
@@ -64,6 +71,7 @@ async function authFetch(path: string, init: RequestInit = {}): Promise<Response
       headers: {
         "Content-Type": "application/json",
         ...init.headers,
+        ...(clientTimezone() ? { "X-Botony-Timezone": clientTimezone() } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
@@ -116,6 +124,10 @@ export const authSession = {
 };
 
 api.interceptors.request.use((config) => {
+  const timezone = clientTimezone();
+  if (timezone) {
+    config.headers["X-Botony-Timezone"] = timezone;
+  }
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }

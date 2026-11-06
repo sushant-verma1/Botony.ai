@@ -1,7 +1,19 @@
 import * as Sentry from "@sentry/node";
 import logger from "../logger.js";
-import { generateWithGemini, streamWithGemini } from "./gemini.provider.js";
-import { generateWithGroq, streamWithGroq } from "./groq.provider.js";
+import {
+  createTemporalContext,
+  type TemporalContext,
+} from "../temporal-context.service.js";
+import {
+  generateToolCallsWithGemini,
+  generateWithGemini,
+  streamWithGemini,
+} from "./gemini.provider.js";
+import {
+  generateToolCallsWithGroq,
+  generateWithGroq,
+  streamWithGroq,
+} from "./groq.provider.js";
 import { geminiModel, groqModel } from "../../config/config.js";
 import {
   AIProviderError,
@@ -14,6 +26,8 @@ import type {
   AIProviderName,
   AIResponse,
   AIStreamEvent,
+  AIToolCallResponse,
+  AIToolDefinition,
 } from "./types.js";
 
 // Tags only — never the prompt/message content itself.
@@ -30,6 +44,20 @@ const AI_UNAVAILABLE_MESSAGE =
   "Our AI assistant is temporarily unavailable. Please try again shortly, or consult a healthcare professional if you need immediate guidance.";
 
 const RETRY_DELAY_MS = 500;
+let geminiQuotaBackoffUntil = 0;
+
+function markGeminiQuotaBackoff(error: unknown): void {
+  if (!(error instanceof AIProviderError) || error.status !== 429) return;
+  const match = /retry in\s+(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?/i.exec(error.message);
+  const delayMs = match
+    ? (Number(match[1] ?? 0) * 3_600_000) + (Number(match[2] ?? 0) * 60_000) + (Number(match[3] ?? 0) * 1_000)
+    : 5 * 60_000;
+  geminiQuotaBackoffUntil = Math.max(geminiQuotaBackoffUntil, Date.now() + delayMs);
+}
+
+function geminiQuotaCoolingDown(): boolean {
+  return Date.now() < geminiQuotaBackoffUntil;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -45,7 +73,15 @@ function delay(ms: number): Promise<void> {
 async function generateResponse(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
+  verifiedPatientContext?: string,
+  temporalContext: TemporalContext = createTemporalContext(),
 ): Promise<AIResponse> {
+  if (geminiQuotaCoolingDown()) {
+    logger.warn("Skipping Gemini generation during quota backoff", {
+      remainingMs: geminiQuotaBackoffUntil - Date.now(),
+    });
+    return generateWithGroq(messages, attachments, verifiedPatientContext, temporalContext);
+  }
   // Attempt-level timings, so a slow response can be attributed to a single
   // slow call rather than to retries and failover stacking up.
   const startedAt = Date.now();
@@ -58,7 +94,12 @@ async function generateResponse(
 
   let attemptStartedAt = Date.now();
   try {
-    const response = await generateWithGemini(messages, attachments);
+    const response = await generateWithGemini(
+      messages,
+      attachments,
+      verifiedPatientContext,
+      temporalContext,
+    );
     logger.info("AI generation succeeded", {
       provider: "gemini",
       attempt: 1,
@@ -68,6 +109,7 @@ async function generateResponse(
     });
     return response;
   } catch (firstError) {
+    markGeminiQuotaBackoff(firstError);
     logger.warn("AI generation attempt failed", {
       provider: "gemini",
       attempt: 1,
@@ -84,6 +126,13 @@ async function generateResponse(
       throw new AIServiceError(AI_UNAVAILABLE_MESSAGE, 503, firstError);
     }
 
+    if (geminiQuotaCoolingDown()) {
+      logger.warn("Gemini quota exhausted; failing over to Groq without retry", {
+        remainingMs: geminiQuotaBackoffUntil - Date.now(),
+      });
+      return generateWithGroq(messages, attachments, verifiedPatientContext, temporalContext);
+    }
+
     logger.warn("Gemini request failed, retrying once", {
       status: firstError.status,
       retryDelayMs: RETRY_DELAY_MS,
@@ -93,7 +142,12 @@ async function generateResponse(
     attemptStartedAt = Date.now();
     logger.info("AI generation started", { provider: "gemini", attempt: 2 });
     try {
-      const response = await generateWithGemini(messages, attachments);
+      const response = await generateWithGemini(
+        messages,
+        attachments,
+        verifiedPatientContext,
+        temporalContext,
+      );
       logger.info("AI generation succeeded", {
         provider: "gemini",
         attempt: 2,
@@ -103,6 +157,7 @@ async function generateResponse(
       });
       return response;
     } catch (secondError) {
+      markGeminiQuotaBackoff(secondError);
       logger.warn("Gemini retry failed, failing over to Groq", {
         status:
           secondError instanceof AIProviderError ? secondError.status : undefined,
@@ -113,7 +168,12 @@ async function generateResponse(
       attemptStartedAt = Date.now();
       logger.info("AI generation started", { provider: "groq", attempt: 3 });
       try {
-        const response = await generateWithGroq(messages, attachments);
+        const response = await generateWithGroq(
+          messages,
+          attachments,
+          verifiedPatientContext,
+          temporalContext,
+        );
         logger.info("AI generation succeeded", {
           provider: "groq",
           attempt: 3,
@@ -138,6 +198,56 @@ async function generateResponse(
   }
 }
 
+/** Native function-call generation with Gemini retry then Groq fallback. */
+async function generateToolCalls(
+  messages: AIMessage[],
+  tools: AIToolDefinition[],
+  temporalContext: TemporalContext = createTemporalContext(),
+): Promise<AIToolCallResponse> {
+  if (geminiQuotaCoolingDown()) {
+    logger.warn("Skipping Gemini function calling during quota backoff", {
+      remainingMs: geminiQuotaBackoffUntil - Date.now(),
+      toolCount: tools.length,
+    });
+    return generateToolCallsWithGroq(messages, tools, temporalContext);
+  }
+  try {
+    return await generateToolCallsWithGemini(messages, tools, temporalContext);
+  } catch (firstError) {
+    markGeminiQuotaBackoff(firstError);
+    if (!(firstError instanceof AIProviderError) || !firstError.retryable) {
+      throw new AIServiceError(AI_UNAVAILABLE_MESSAGE, 503, firstError);
+    }
+    if (geminiQuotaCoolingDown()) {
+      logger.warn("Gemini quota exhausted; using Groq function calling without retry", {
+        remainingMs: geminiQuotaBackoffUntil - Date.now(),
+        toolCount: tools.length,
+      });
+      return generateToolCallsWithGroq(messages, tools, temporalContext);
+    }
+    logger.warn("Gemini function calling failed; retrying", {
+      status: firstError.status,
+      toolCount: tools.length,
+    });
+    await delay(RETRY_DELAY_MS);
+    try {
+      return await generateToolCallsWithGemini(messages, tools, temporalContext);
+    } catch (secondError) {
+      markGeminiQuotaBackoff(secondError);
+      logger.warn("Gemini function calling failed; falling back to Groq", {
+        status: secondError instanceof AIProviderError ? secondError.status : undefined,
+        toolCount: tools.length,
+      });
+      try {
+        return await generateToolCallsWithGroq(messages, tools, temporalContext);
+      } catch (groqError) {
+        reportProviderFailure(secondError, "gemini");
+        reportProviderFailure(groqError, "groq");
+        throw new AIServiceError(AI_UNAVAILABLE_MESSAGE, 503, groqError);
+      }
+    }
+  }
+}
 
 const AI_INTERRUPTED_MESSAGE =
   "The answer was cut off before it finished. Please ask again.";
@@ -149,6 +259,8 @@ interface StreamAttempt {
     messages: AIMessage[],
     attachments: AIAttachmentContent[],
     signal?: AbortSignal,
+    verifiedPatientContext?: string,
+    temporalContext?: TemporalContext,
   ) => AsyncGenerator<string>;
 }
 
@@ -168,14 +280,18 @@ async function* streamResponse(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
   signal?: AbortSignal,
+  verifiedPatientContext?: string,
+  temporalContext: TemporalContext = createTemporalContext(),
 ): AsyncGenerator<AIStreamEvent> {
   const startedAt = Date.now();
 
-  const attempts: StreamAttempt[] = [
-    { provider: "gemini", model: geminiModel, run: streamWithGemini },
-    { provider: "gemini", model: geminiModel, run: streamWithGemini },
-    { provider: "groq", model: groqModel, run: streamWithGroq },
-  ];
+  const attempts: StreamAttempt[] = geminiQuotaCoolingDown()
+    ? [{ provider: "groq", model: groqModel, run: streamWithGroq }]
+    : [
+      { provider: "gemini", model: geminiModel, run: streamWithGemini },
+      { provider: "gemini", model: geminiModel, run: streamWithGemini },
+      { provider: "groq", model: groqModel, run: streamWithGroq },
+    ];
 
   logger.info("AI stream started", {
     provider: attempts[0].provider,
@@ -192,7 +308,15 @@ async function* streamResponse(
     let text = "";
 
     try {
-      for await (const delta of run(messages, attachments, signal)) {
+      const providerStream = run(
+        messages,
+        attachments,
+        signal,
+        verifiedPatientContext,
+        temporalContext,
+      );
+
+      for await (const delta of providerStream) {
         if (chunks === 0) {
           firstChunkMs = Date.now() - attemptStartedAt;
           yield { type: "start", provider, model };
@@ -229,6 +353,7 @@ async function* streamResponse(
       };
       return;
     } catch (error) {
+      if (provider === "gemini") markGeminiQuotaBackoff(error);
       // A client disconnect aborts the provider call; that is not a failure
       // to fail over from, and there is nobody left to serve.
       if (signal?.aborted) {
@@ -299,6 +424,7 @@ async function* streamResponse(
 
 export {
   generateResponse,
+  generateToolCalls,
   streamResponse,
   AIServiceError,
   AIStreamInterruptedError,
@@ -306,4 +432,6 @@ export {
   type AIAttachmentContent,
   type AIResponse,
   type AIStreamEvent,
+  type AIToolCallResponse,
+  type AIToolDefinition,
 };

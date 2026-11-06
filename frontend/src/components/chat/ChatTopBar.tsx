@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, Settings, ShieldAlert, User } from "lucide-react";
+import { ChevronDown, HeartPulse, LogOut, Pill, Settings, ShieldAlert, Users, User } from "lucide-react";
 import type { ConversationSummary } from "../../types/chat";
 import Mark from "../Mark";
 import Spinner from "../Spinner";
@@ -20,6 +20,10 @@ interface ChatTopBarProps {
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenSafety: () => void;
+  onOpenMedicationSchedule: () => void;
+  onOpenMedicationManager: () => void;
+  onOpenHealthTracker: () => void;
+  onOpenCareCircle: () => void;
   onRequestLogout: () => void;
   loggingOut: boolean;
 }
@@ -31,6 +35,10 @@ export default function ChatTopBar({
   onOpenProfile,
   onOpenSettings,
   onOpenSafety,
+  onOpenMedicationSchedule,
+  onOpenMedicationManager,
+  onOpenHealthTracker,
+  onOpenCareCircle,
   onRequestLogout,
   loggingOut,
 }: ChatTopBarProps) {
@@ -113,6 +121,22 @@ export default function ChatTopBar({
             <DropdownMenuItem onClick={onOpenSafety}>
               <ShieldAlert aria-hidden="true" />
               Safety and limits
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onOpenMedicationSchedule}>
+              <Pill aria-hidden="true" />
+              Schedule medicine
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onOpenMedicationManager}>
+              <Pill aria-hidden="true" />
+              Manage medicines
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onOpenHealthTracker}>
+              <HeartPulse aria-hidden="true" />
+              Health tracker
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onOpenCareCircle}>
+              <Users aria-hidden="true" />
+              Care circle
             </DropdownMenuItem>
           </DropdownMenuGroup>
 

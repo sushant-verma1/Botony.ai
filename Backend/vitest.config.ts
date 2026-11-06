@@ -11,7 +11,7 @@ export default defineConfig({
       REFRESH_TOKEN_SECRET: "test-refresh-token-secret",
       DATABASE_URL: "postgresql://test:test@localhost:5432/test",
       GROQ_API_KEY: "test-groq-api-key",
-      GROQ_MODEL: "meta-llama/llama-4-scout-17b-16e-instruct",
+      GROQ_MODEL: "qwen/qwen3.8-27b",
       GEMINI_API_KEY: "test-gemini-api-key",
       GEMINI_MODEL: "gemini-3.6-flash",
       CLOUDINARY_CLOUD_NAME: "test-cloud",

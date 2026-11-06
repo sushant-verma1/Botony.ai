@@ -2,9 +2,17 @@ import OpenAI from "openai";
 import { groqApiKey, groqModel } from "../../config/config.js";
 import logger from "../logger.js";
 import { inlineImage } from "./image.js";
-import { MEDICAL_SYSTEM_PROMPT } from "./prompt.js";
+import { getSystemPrompt } from "./prompt.js";
+import { createTemporalContext, type TemporalContext } from "../temporal-context.service.js";
 import { createReasoningFilter, splitReasoning } from "./reasoning.js";
-import type { AIAttachmentContent, AIMessage, AIResponse } from "./types.js";
+import type {
+  AIAttachmentContent,
+  AIMessage,
+  AIResponse,
+  AIToolCall,
+  AIToolCallResponse,
+  AIToolDefinition,
+} from "./types.js";
 import { AIProviderError } from "./types.js";
 
 // Groq exposes an OpenAI-compatible endpoint, so the installed SDK is reused
@@ -22,9 +30,12 @@ type ChatContentPart =
 async function toChatMessages(
   messages: AIMessage[],
   attachments: AIAttachmentContent[],
+  verifiedPatientContext?: string,
+  temporalContext?: TemporalContext,
 ): Promise<OpenAI.Chat.Completions.ChatCompletionMessageParam[]> {
+  const context = temporalContext ?? createTemporalContext();
   const chatMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: MEDICAL_SYSTEM_PROMPT },
+    { role: "system", content: getSystemPrompt(verifiedPatientContext, context) },
     ...messages.slice(0, -1).map((m) => ({
       role: m.role,
       content: m.content,
@@ -90,6 +101,8 @@ function isRetryableStatus(status: number | undefined): boolean {
 async function generateWithGroq(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
+  verifiedPatientContext?: string,
+  temporalContext?: TemporalContext,
 ): Promise<AIResponse> {
   const startedAt = Date.now();
   const imageCount = attachments.filter((a) => a.type === "image").length;
@@ -102,7 +115,12 @@ async function generateWithGroq(
     });
 
     const prepStartedAt = Date.now();
-    const chatMessages = await toChatMessages(messages, attachments);
+    const chatMessages = await toChatMessages(
+      messages,
+      attachments,
+      verifiedPatientContext,
+      temporalContext,
+    );
     const prepMs = Date.now() - prepStartedAt;
 
     const apiStartedAt = Date.now();
@@ -223,6 +241,79 @@ async function generateWithGroq(
   }
 }
 
+/** Groq's OpenAI-compatible native function-calling adapter. */
+async function generateToolCallsWithGroq(
+  messages: AIMessage[],
+  tools: AIToolDefinition[],
+  temporalContext?: TemporalContext,
+): Promise<AIToolCallResponse> {
+  const startedAt = Date.now();
+  try {
+    const response = await client.chat.completions.create({
+      model: groqModel,
+      max_tokens: 600,
+      messages: await toChatMessages(messages, [], undefined, temporalContext),
+      tools: tools.map((tool) => ({
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        },
+      })),
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+    } as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming);
+    const message = response.choices[0]?.message;
+    const toolCalls: AIToolCall[] = (message?.tool_calls ?? []).flatMap((call) => {
+      if (call.type !== "function") return [];
+      try {
+        const value = JSON.parse(call.function.arguments);
+        return [{
+          id: call.id,
+          name: call.function.name,
+          arguments: value && typeof value === "object" && !Array.isArray(value)
+            ? value as Record<string, unknown>
+            : {},
+        }];
+      } catch {
+        return [];
+      }
+    });
+    const { text } = splitReasoning(message?.content ?? "");
+    logger.info("Groq function-call response received", {
+      model: groqModel,
+      toolCount: tools.length,
+      callCount: toolCalls.length,
+      totalMs: Date.now() - startedAt,
+    });
+    return { text, toolCalls, provider: "groq", model: response.model };
+  } catch (error) {
+    if (error instanceof AIProviderError) throw error;
+    if (error instanceof OpenAI.APIError) {
+      logger.error("Groq function-call API error", {
+        model: groqModel,
+        status: error.status,
+        toolCount: tools.length,
+        message: error.message,
+        failedAfterMs: Date.now() - startedAt,
+      });
+      throw new AIProviderError(error.message, "groq", isRetryableStatus(error.status), error.status);
+    }
+    logger.error("Groq function-call request failed", {
+      model: groqModel,
+      toolCount: tools.length,
+      message: error instanceof Error ? error.message : "unknown",
+      failedAfterMs: Date.now() - startedAt,
+    });
+    throw new AIProviderError(
+      error instanceof Error ? error.message : "Unknown Groq function call error",
+      "groq",
+      true,
+    );
+  }
+}
+
 /**
  * Streaming twin of generateWithGroq: same model, same reasoning_effort
  * "none", same image inlining. Only `delta.content` is yielded — `reasoning`
@@ -232,6 +323,8 @@ async function* streamWithGroq(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
   signal?: AbortSignal,
+  verifiedPatientContext?: string,
+  temporalContext?: TemporalContext,
 ): AsyncGenerator<string> {
   const startedAt = Date.now();
   const imageCount = attachments.filter((a) => a.type === "image").length;
@@ -251,7 +344,12 @@ async function* streamWithGroq(
     });
 
     const prepStartedAt = Date.now();
-    const chatMessages = await toChatMessages(messages, attachments);
+    const chatMessages = await toChatMessages(
+      messages,
+      attachments,
+      verifiedPatientContext,
+      temporalContext,
+    );
     const prepMs = Date.now() - prepStartedAt;
 
     // Same non-thinking configuration as the non-streaming call; see the
@@ -356,4 +454,4 @@ async function* streamWithGroq(
   }
 }
 
-export { generateWithGroq, streamWithGroq };
+export { generateWithGroq, generateToolCallsWithGroq, streamWithGroq };

@@ -29,6 +29,98 @@ import {
   AttachmentError,
 } from "../services/attachment.service.js";
 import logger from "../services/logger.js";
+import { buildVerifiedMemoryContext } from "../services/memory.service.js";
+import {
+  AgentActionError,
+  draftMedicationScheduleFromRequest,
+} from "../services/agent/medication-schedule-agent.service.js";
+import { discoverToolCall } from "../services/agent/tool-discovery.service.js";
+import {
+  draftMedicineScheduleMutation,
+  MedicineScheduleMutationError,
+} from "../services/agent/medicine-schedule-mutation.service.js";
+import { listMedicineSchedules, MedicationError } from "../services/medication.service.js";
+import { createTemporalContext } from "../services/temporal-context.service.js";
+import { isProduction } from "../config/config.js";
+
+const SCHEDULE_CLARIFICATION_PREFIX = "To set up this medication reminder, I still need";
+
+interface ScheduleHistoryMessage {
+  role: string;
+  content: string;
+}
+
+function isScheduleClarification(message: ScheduleHistoryMessage | undefined): boolean {
+  return message?.role === "assistant" && message.content.startsWith(SCHEDULE_CLARIFICATION_PREFIX);
+}
+
+/**
+ * A clarification is part of the same request, not a fresh chat topic. Keep
+ * only patient messages since the most recent ordinary assistant response so
+ * the planner receives the original request plus every supplied detail.
+ */
+export function scheduleRequestWithFollowUp(
+  content: string,
+  history: ScheduleHistoryMessage[],
+): string | null {
+  if (!isScheduleClarification(history[history.length - 1])) return null;
+
+  let boundary = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    if (message.role === "assistant" && !isScheduleClarification(message)) {
+      boundary = index;
+      break;
+    }
+  }
+  const earlierPatientMessages = history
+    .slice(boundary + 1)
+    .filter((message) => message.role === "user")
+    .map((message) => message.content);
+  return [...earlierPatientMessages, content].join("\n");
+}
+
+/**
+ * Routing telemetry intentionally stores only IDs and decisions, never the
+ * patient's message text or medical details. A telemetry write must not make
+ * chat unavailable, so its failure is logged and the request continues.
+ */
+async function recordToolRoutingAudit(
+  userId: string,
+  conversationId: string,
+  toolName: string,
+  source: "native_function_call" | "deterministic_fallback" | "active_workflow" | "none",
+) {
+  try {
+    await prisma.auditEvent.create({
+      data: {
+        userId,
+        action: toolName === "none" ? "AGENT_TOOL_NOT_SELECTED" : "AGENT_TOOL_SELECTED",
+        resourceType: "Conversation",
+        resourceId: conversationId,
+        metadata: { toolName, source },
+      },
+    });
+  } catch (error) {
+    logger.error("Agent tool routing audit write failed", {
+      conversationId,
+      toolName,
+      source,
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
+  }
+}
+
+function scheduleAgentReply(
+  result: Awaited<ReturnType<typeof draftMedicationScheduleFromRequest>>,
+): string {
+  if (result.kind === "clarification") {
+    return result.question.startsWith(SCHEDULE_CLARIFICATION_PREFIX)
+      ? result.question
+      : `${SCHEDULE_CLARIFICATION_PREFIX} clarification: ${result.question}`;
+  }
+  return "I prepared a medication reminder schedule. Please review the details and confirm it if they are correct.";
+}
 
 export const newChatController = async (
   req: Express.Request,
@@ -154,6 +246,9 @@ export const messageController = async (
   req: Express.Request<{ chatid?: string }>,
   res: Express.Response,
 ) => {
+  // Capture the instant once for routing, planning, retries and the final
+  // response. The browser contributes only its IANA zone, never its clock.
+  const temporalContext = createTemporalContext(req.get("X-Botony-Timezone"));
   // Present for POST /:chatid/message, absent for POST /message — the
   // no-conversation-yet path, where body.draftId stands in for it.
   const paramConversationId = req.params.chatid;
@@ -252,6 +347,31 @@ export const messageController = async (
   // The existing-conversation path keeps using the route param exactly as
   // before; only the draft path's freshly created id is new.
   const conversationId = paramConversationId ?? conversation.id;
+
+  // Development convenience only. Production treats this as normal chat text;
+  // billing/entitlements must never be granted from a message command.
+  if (!isProduction && content.trim().toLowerCase() === "/premium") {
+    const userMessage = draftUserMessage ?? await prisma.message.create({
+      data: { conversationId, content, role: "user", userId: req.user.userId, emergencyDetected: false },
+    });
+    const assistantMessage = await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: req.user.userId }, data: { isPremium: true } });
+      return tx.message.create({
+        data: {
+          conversationId,
+          content: "Premium is active for this development account.",
+          role: "assistant",
+          userId: req.user.userId,
+        },
+      });
+    });
+    logger.info("Development premium command activated", { userId: req.user.userId, conversationId });
+    openEventStream(res);
+    sendEvent(res, "start", { provider: "development" });
+    sendEvent(res, "delta", { text: assistantMessage.content });
+    sendEvent(res, "done", { conversationId, messageId: userMessage.id, assistantMessageId: assistantMessage.id, type: "normal" });
+    return res.end();
+  }
 
   if (replayed) {
     // The draftId was already used. If it already produced a reply, this is
@@ -379,6 +499,77 @@ export const messageController = async (
   }
 
   try {
+    const recentScheduleHistory = await prisma.message.findMany({
+      where: { conversationId },
+      select: { role: true, content: true },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+    }) ?? [];
+    const scheduleHistory = recentScheduleHistory.reverse();
+    const pendingScheduleRun = await prisma.agentRun.findFirst({
+      where: {
+        userId: req.user.userId,
+        conversationId,
+        intent: "draft_medication_schedule",
+        status: "BLOCKED",
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true, missingFields: true, revision: true },
+      orderBy: { createdAt: "desc" },
+    });
+    const toolHistory: AIMessage[] = [
+      ...scheduleHistory.map((message) => ({
+        role: message.role === "assistant" ? "assistant" as const : "user" as const,
+        content: message.content,
+      })),
+      ...(pendingScheduleRun ? [{
+        role: "assistant" as const,
+        content: `SERVER-SUPPLIED ACTIVE WORKFLOW: medication reminder setup is awaiting ${pendingScheduleRun.missingFields.join(", ") || "details"}. Continue it only if the latest patient message supplies those details; otherwise respond to the patient's actual request.`,
+      }] : []),
+      { role: "user", content },
+    ];
+    const pendingScheduleRequest = scheduleRequestWithFollowUp(content, scheduleHistory);
+    // Once the planner has asked for details, short replies such as "8 PM"
+    // continue the known workflow without relying on another model tool call.
+    const continuePendingSchedule = Boolean(
+      pendingScheduleRun && isScheduleClarification(scheduleHistory[scheduleHistory.length - 1]),
+    );
+    let discovery: Awaited<ReturnType<typeof discoverToolCall>> = null;
+    if (!continuePendingSchedule) {
+      try {
+        discovery = await discoverToolCall(toolHistory, temporalContext);
+      } catch (error) {
+        logger.warn("Native tool discovery failed; continuing with chat", {
+          userId: req.user.userId,
+          conversationId,
+          errorName: error instanceof Error ? error.name : "unknown",
+          message: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
+    const discoveredTool = discovery && "tool" in discovery ? discovery : null;
+    const directToolResponse = discovery && "text" in discovery ? discovery : null;
+    const toolName = continuePendingSchedule
+      ? "createMedicineSchedule"
+      : discoveredTool?.tool.name ?? "none";
+    const routingSource = continuePendingSchedule
+      ? "active_workflow" as const
+      : discoveredTool
+      ? "native_function_call" as const
+      : "none" as const;
+    const scheduleRequest = toolName === "createMedicineSchedule"
+      ? (pendingScheduleRequest ?? content)
+      : null;
+
+    logger.info("Agent tool routing decided", {
+      userId: req.user.userId,
+      conversationId,
+      toolName,
+      routingSource,
+      provider: discovery?.provider,
+    });
+    await recordToolRoutingAudit(req.user.userId, conversationId, toolName, routingSource);
+
     const userMessage =
       draftUserMessage ??
       (await prisma.message.create({
@@ -393,6 +584,158 @@ export const messageController = async (
 
     if (!draftUserMessage) {
       await bindAttachmentsToMessage(attachmentIds, userMessage.id);
+    }
+
+    // AUTO selection may return a normal health answer or a clarification.
+    // That is a successful model outcome, not proof that the request is out
+    // of scope, and reusing it avoids a second inference for non-tool turns.
+    if (!discoveredTool && directToolResponse) {
+      const assistantMessage = await prisma.message.create({
+        data: {
+          conversationId,
+          content: directToolResponse.text,
+          role: "assistant",
+          userId: req.user.userId,
+          emergencyDetected: false,
+        },
+      });
+      openEventStream(res);
+      sendEvent(res, "start", { provider: directToolResponse.provider });
+      sendEvent(res, "delta", { text: directToolResponse.text });
+      sendEvent(res, "done", {
+        conversationId,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+        type: "normal",
+      });
+      return res.end();
+    }
+
+    if (toolName === "getMedicineSchedules") {
+      const schedules = await listMedicineSchedules(req.user.userId);
+      const reply = schedules.length === 0
+        ? "You do not have any active medicine reminder schedules."
+        : `You have ${schedules.length} active medicine reminder schedule${schedules.length === 1 ? "" : "s"}.`;
+      const assistantMessage = await prisma.message.create({
+        data: { conversationId, content: reply, role: "assistant", userId: req.user.userId, emergencyDetected: false },
+      });
+      openEventStream(res);
+      sendEvent(res, "start", { provider: "medicine-schedule-tool" });
+      sendEvent(res, "delta", { text: reply });
+      sendEvent(res, "done", { conversationId, messageId: userMessage.id, assistantMessageId: assistantMessage.id, type: "normal" });
+      return res.end();
+    }
+
+    if (toolName === "cancelMedicationScheduleDraft") {
+      const cancelled = await prisma.agentRun.updateMany({
+        where: {
+          userId: req.user.userId,
+          conversationId,
+          intent: "draft_medication_schedule",
+          status: "BLOCKED",
+          expiresAt: { gt: new Date() },
+        },
+        data: { status: "CANCELLED", completedAt: new Date() },
+      });
+      const reply = cancelled.count
+        ? "I cancelled the unfinished medication reminder setup."
+        : "There is no unfinished medication reminder setup to cancel.";
+      const assistantMessage = await prisma.message.create({
+        data: { conversationId, content: reply, role: "assistant", userId: req.user.userId, emergencyDetected: false },
+      });
+      openEventStream(res);
+      sendEvent(res, "start", { provider: "medicine-schedule-tool" });
+      sendEvent(res, "delta", { text: reply });
+      sendEvent(res, "done", { conversationId, messageId: userMessage.id, assistantMessageId: assistantMessage.id, type: "normal" });
+      return res.end();
+    }
+
+    if (toolName === "updateMedicineSchedule" || toolName === "deleteMedicineSchedule") {
+      let reply: string;
+      let action: { id: string; expiresAt: Date } | undefined;
+      let confirmationToken: string | undefined;
+      try {
+        const drafted = await draftMedicineScheduleMutation(
+          req.user.userId,
+          toolName,
+          discoveredTool?.arguments ?? {},
+          conversationId,
+          temporalContext,
+        );
+        action = drafted.action;
+        confirmationToken = drafted.confirmationToken;
+        reply = `I prepared this medicine reminder ${toolName === "deleteMedicineSchedule" ? "deletion" : "update"}. Please review and confirm it.`;
+      } catch (error) {
+        reply = error instanceof MedicineScheduleMutationError || error instanceof MedicationError
+          ? error.message
+          : "I could not prepare that medicine reminder change right now.";
+      }
+      const assistantMessage = await prisma.message.create({
+        data: { conversationId, content: reply, role: "assistant", userId: req.user.userId, emergencyDetected: false },
+      });
+      openEventStream(res);
+      sendEvent(res, "start", { provider: "medicine-schedule-tool" });
+      sendEvent(res, "delta", { text: reply });
+      if (action && confirmationToken) {
+        sendEvent(res, "medicine_schedule_mutation_proposal", { action, confirmationToken, operation: toolName });
+      }
+      sendEvent(res, "done", { conversationId, messageId: userMessage.id, assistantMessageId: assistantMessage.id, type: "normal" });
+      return res.end();
+    }
+
+    if (scheduleRequest) {
+      // Schedule creation is a side effect, so this branch can only draft a
+      // proposal. The client receives a confirmation control that calls the
+      // existing confirmation endpoint before any schedule is written.
+      let reply: string;
+      let proposal: Awaited<ReturnType<typeof draftMedicationScheduleFromRequest>> | undefined;
+      try {
+        proposal = await draftMedicationScheduleFromRequest(
+          req.user.userId,
+          scheduleRequest,
+          { conversationId, temporalContext },
+        );
+        reply = scheduleAgentReply(proposal);
+      } catch (error) {
+        if (error instanceof AgentActionError || error instanceof MedicationError) {
+          reply = error.message;
+        } else {
+          logger.error("Medication schedule draft failed", {
+            conversationId,
+            userId: req.user.userId,
+            message: error instanceof Error ? error.message : "unknown",
+          });
+          reply = "I could not prepare a medication schedule right now. Please try again shortly.";
+        }
+      }
+
+      const assistantMessage = await prisma.message.create({
+        data: {
+          conversationId,
+          content: reply,
+          role: "assistant",
+          userId: req.user.userId,
+          emergencyDetected: false,
+        },
+      });
+
+      openEventStream(res);
+      sendEvent(res, "start", { provider: "medication-schedule-agent" });
+      sendEvent(res, "delta", { text: reply });
+      if (proposal?.kind === "proposal") {
+        sendEvent(res, "medication_schedule_proposal", {
+          action: proposal.action,
+          draft: proposal.draft,
+          confirmationToken: proposal.confirmationToken,
+        });
+      }
+      sendEvent(res, "done", {
+        conversationId,
+        messageId: userMessage.id,
+        assistantMessageId: assistantMessage.id,
+        type: "normal",
+      });
+      return res.end();
     }
 
     const previousMessages = await prisma.message.findMany({
@@ -461,6 +804,22 @@ export const messageController = async (
       }),
     );
 
+    // Retrieval failure must never make the model invent memory or prevent a
+    // patient from receiving ordinary educational guidance. The agent simply
+    // runs without long-term context for this turn.
+    let verifiedPatientContext: string | undefined;
+    try {
+      verifiedPatientContext = await buildVerifiedMemoryContext(
+        req.user.userId,
+      );
+    } catch (error) {
+      logger.error("Verified patient memory retrieval failed", {
+        userId: req.user.userId,
+        conversationId,
+        message: error instanceof Error ? error.message : "unknown",
+      });
+    }
+
     // The browser can close mid-answer; when it does the provider call is
     // aborted rather than left generating tokens nobody will read.
     const abortController = new AbortController();
@@ -484,6 +843,8 @@ export const messageController = async (
         messagesForClaude,
         aiAttachments,
         abortController.signal,
+        verifiedPatientContext,
+        temporalContext,
       )) {
         if (event.type === "start") {
           sendEvent(res, "start", { provider: event.provider });

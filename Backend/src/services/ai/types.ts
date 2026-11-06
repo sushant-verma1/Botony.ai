@@ -38,6 +38,26 @@ export interface AIResponse {
   finishReason?: string;
 }
 
+/** JSON-schema function definition shared by Gemini and Groq adapters. */
+export interface AIToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface AIToolCall {
+  id?: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface AIToolCallResponse {
+  text: string;
+  toolCalls: AIToolCall[];
+  provider: "gemini" | "groq";
+  model: string;
+}
+
 export type AIProviderName = "gemini" | "groq";
 
 /**

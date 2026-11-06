@@ -3,6 +3,8 @@ import type {
   NewChatResponse,
   SendMessageResult,
   MessageStreamHandlers,
+  MedicationScheduleProposal,
+  MedicineScheduleMutationProposal,
   HistoryResponse,
   ConversationsResponse,
 } from '../../types/chat'
@@ -27,6 +29,60 @@ function parseFrame(frame: string): {
   } catch {
     return { event, data: {} }
   }
+}
+
+function medicationScheduleProposalFrom(data: Record<string, unknown>): MedicationScheduleProposal | null {
+  const action = data.action
+  const draft = data.draft
+  if (
+    typeof data.confirmationToken !== 'string' ||
+    typeof action !== 'object' || action === null ||
+    typeof draft !== 'object' || draft === null
+  ) return null
+
+  const actionValue = action as Record<string, unknown>
+  const draftValue = draft as Record<string, unknown>
+  if (
+    typeof actionValue.id !== 'string' ||
+    typeof actionValue.expiresAt !== 'string' ||
+    !Array.isArray(draftValue.times) ||
+    !draftValue.times.every((time) => typeof time === 'string') ||
+    typeof draftValue.timezone !== 'string' ||
+    typeof draftValue.startsOn !== 'string' ||
+    (draftValue.endsOn !== undefined && typeof draftValue.endsOn !== 'string')
+  ) return null
+
+  const medicationId = typeof draftValue.medicationId === 'string' ? draftValue.medicationId : undefined
+  const newMedicationValue = draftValue.newMedication
+  const newMedication = typeof newMedicationValue === 'object' && newMedicationValue !== null && !Array.isArray(newMedicationValue)
+    ? newMedicationValue as Record<string, unknown>
+    : null
+  if ((medicationId ? 1 : 0) + (newMedication ? 1 : 0) !== 1 || (newMedication && typeof newMedication.name !== 'string')) return null
+
+  return {
+    action: { id: actionValue.id, expiresAt: actionValue.expiresAt },
+    draft: {
+      ...(medicationId ? { medicationId } : { newMedication: {
+        name: newMedication!.name as string,
+        ...(typeof newMedication!.strength === 'string' ? { strength: newMedication!.strength } : {}),
+        ...(typeof newMedication!.form === 'string' ? { form: newMedication!.form } : {}),
+      } }),
+      times: draftValue.times,
+      timezone: draftValue.timezone,
+      startsOn: draftValue.startsOn,
+      ...(typeof draftValue.endsOn === 'string' ? { endsOn: draftValue.endsOn } : {}),
+    },
+    confirmationToken: data.confirmationToken,
+  }
+}
+
+function medicineScheduleMutationProposalFrom(data: Record<string, unknown>): MedicineScheduleMutationProposal | null {
+  const action = data.action
+  if (typeof action !== 'object' || action === null || typeof data.confirmationToken !== 'string') return null
+  const actionValue = action as Record<string, unknown>
+  if (typeof actionValue.id !== 'string' || typeof actionValue.expiresAt !== 'string') return null
+  if (data.operation !== 'updateMedicineSchedule' && data.operation !== 'deleteMedicineSchedule') return null
+  return { action: { id: actionValue.id, expiresAt: actionValue.expiresAt }, confirmationToken: data.confirmationToken, operation: data.operation }
 }
 
 /**
@@ -85,6 +141,14 @@ async function streamMessage(
 
       if (event === 'start') handlers.onStart?.(String(data.provider ?? ''))
       else if (event === 'delta') handlers.onDelta(String(data.text ?? ''))
+      else if (event === 'medication_schedule_proposal') {
+        const proposal = medicationScheduleProposalFrom(data)
+        if (proposal) handlers.onMedicationScheduleProposal?.(proposal)
+      }
+      else if (event === 'medicine_schedule_mutation_proposal') {
+        const proposal = medicineScheduleMutationProposalFrom(data)
+        if (proposal) handlers.onMedicineScheduleMutationProposal?.(proposal)
+      }
       else if (event === 'done') result = data as unknown as SendMessageResult
       else if (event === 'error') throw new Error(String(data.message))
 

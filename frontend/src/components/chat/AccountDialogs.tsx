@@ -16,6 +16,7 @@ import {
 import { Field, FieldError, FieldGroup, FieldLabel } from "../ui/field";
 import { Input } from "../ui/input";
 import type { ChatPrefs } from "./prefs";
+import { enableBrowserPush } from "../../services/browserPush";
 
 interface DialogProps {
   open: boolean;
@@ -228,6 +229,18 @@ export function SettingsDialog({
   prefs: ChatPrefs;
   onChange: (next: Partial<ChatPrefs>) => void;
 }) {
+  const [enablingNotifications, setEnablingNotifications] = useState(false);
+  const enableNotifications = async () => {
+    setEnablingNotifications(true);
+    try {
+      await enableBrowserPush();
+      toast.success("Browser notifications enabled");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not enable browser notifications");
+    } finally {
+      setEnablingNotifications(false);
+    }
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="gap-4 p-5 sm:max-w-3xl">
@@ -274,6 +287,14 @@ export function SettingsDialog({
               ]}
               onChange={(v) => onChange({ textSize: v })}
             />
+          </Row>
+          <Row
+            title="Browser medication reminders"
+            description="Shows medication reminders even when Botony is closed. Your browser will ask for permission."
+          >
+            <Button onClick={() => void enableNotifications()} disabled={enablingNotifications} className="h-9 rounded-full px-4">
+              {enablingNotifications ? "Enabling..." : "Enable"}
+            </Button>
           </Row>
         </div>
       </DialogContent>

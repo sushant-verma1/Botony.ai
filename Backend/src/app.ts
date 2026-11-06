@@ -8,8 +8,17 @@ import * as Sentry from "@sentry/node";
 import authRouter from "./routes/auth.routes.js";
 import chatRouter from "./routes/chat.routes.js";
 import attachmentRouter from "./routes/attachment.routes.js";
+import memoryRouter from "./routes/memory.routes.js";
+import medicationRouter from "./routes/medication.routes.js";
+import reminderRouter from "./routes/reminder.routes.js";
+import notificationRouter from "./routes/notification.routes.js";
+import agentRouter from "./routes/agent.routes.js";
+import reportRouter from "./routes/report.routes.js";
+import healthTrackerRouter from "./routes/health-tracker.routes.js";
+import careAccessRouter from "./routes/care-access.routes.js";
 import logger from "./services/logger.js";
 import cookieParser from "cookie-parser";
+import { liveController, readyController } from "./controllers/system.controller.js";
 
 const app = express();
 
@@ -33,10 +42,20 @@ app.use(cookieParser());
 app.use("/api/auth", authRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/attachments", attachmentRouter);
+app.use("/api/memory", memoryRouter);
+app.use("/api/medications", medicationRouter);
+app.use("/api/reminders", reminderRouter);
+app.use("/api/notifications", notificationRouter);
+app.use("/api/agent", agentRouter);
+app.use("/api/reports", reportRouter);
+app.use("/api/health", healthTrackerRouter);
+app.use("/api/care-circle", careAccessRouter);
 
 app.get("/", (req, res) => {
   res.send("API running");
 });
+app.get("/health/live", liveController);
+app.get("/health/ready", readyController);
 
 // app.get("/test-error", (req, res) => {
 //   throw new Error("Test error triggered");

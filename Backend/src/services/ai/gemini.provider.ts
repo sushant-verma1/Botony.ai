@@ -1,12 +1,20 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
-import { geminiApiKey, geminiModel } from "../../config/config.js";
+import { geminiApiKey, geminiEmbeddingModel, geminiModel } from "../../config/config.js";
 import logger from "../logger.js";
 import { describeError } from "../../utils/error.util.js";
 import { inlineImage } from "./image.js";
-import { MEDICAL_SYSTEM_PROMPT } from "./prompt.js";
+import { getSystemPrompt } from "./prompt.js";
+import { createTemporalContext, type TemporalContext } from "../temporal-context.service.js";
 import { createReasoningFilter, splitReasoning } from "./reasoning.js";
-import type { AIAttachmentContent, AIMessage, AIResponse } from "./types.js";
+import type {
+  AIAttachmentContent,
+  AIMessage,
+  AIResponse,
+  AIToolCall,
+  AIToolCallResponse,
+  AIToolDefinition,
+} from "./types.js";
 import { AIProviderError } from "./types.js";
 
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
@@ -70,6 +78,8 @@ function isRetryableMessage(message: string): boolean {
 async function generateWithGemini(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
+  verifiedPatientContext?: string,
+  temporalContext?: TemporalContext,
 ): Promise<AIResponse> {
   const startedAt = Date.now();
   try {
@@ -101,7 +111,7 @@ async function generateWithGemini(
       model: geminiModel,
       contents,
       config: {
-        systemInstruction: MEDICAL_SYSTEM_PROMPT,
+        systemInstruction: getSystemPrompt(verifiedPatientContext, temporalContext ?? createTemporalContext()),
         maxOutputTokens: 1000,
         thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
       },
@@ -190,6 +200,86 @@ async function generateWithGemini(
   }
 }
 
+/** Native Gemini function-calling adapter. Tool execution stays server-side. */
+async function generateToolCallsWithGemini(
+  messages: AIMessage[],
+  tools: AIToolDefinition[],
+  temporalContext?: TemporalContext,
+): Promise<AIToolCallResponse> {
+  const startedAt = Date.now();
+  try {
+    const response = await ai.models.generateContent({
+      model: geminiModel,
+      contents: await toGeminiContents(messages, []),
+      config: {
+        systemInstruction: getSystemPrompt(undefined, temporalContext ?? createTemporalContext()),
+        maxOutputTokens: 600,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+        tools: [{
+          functionDeclarations: tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            parametersJsonSchema: tool.parameters,
+          })),
+        }],
+      },
+    });
+    const toolCalls: AIToolCall[] = (response.functionCalls ?? []).flatMap((call) => {
+      if (!call.name) return [];
+      const args = call.args;
+      return [{
+        id: call.id,
+        name: call.name,
+        arguments: args && typeof args === "object" && !Array.isArray(args)
+          ? args as Record<string, unknown>
+          : {},
+      }];
+    });
+    const { text } = splitReasoning(response.text ?? "");
+    logger.info("Gemini function-call response received", {
+      model: geminiModel,
+      toolCount: tools.length,
+      callCount: toolCalls.length,
+      totalMs: Date.now() - startedAt,
+    });
+    return { text, toolCalls, provider: "gemini", model: geminiModel };
+  } catch (error) {
+    if (error instanceof AIProviderError) throw error;
+    const details = describeError(error);
+    throw new AIProviderError(details.message, "gemini", isRetryableMessage(details.message), details.httpCode);
+  }
+}
+
+/** Text embeddings used only for server-side tool discovery; no patient text is logged. */
+async function embedTextWithGemini(texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  try {
+    const response = await ai.models.embedContent({
+      model: geminiEmbeddingModel,
+      contents: texts,
+      config: { taskType: "SEMANTIC_SIMILARITY", outputDimensionality: 768 },
+    });
+    const embeddings = (response.embeddings ?? []).map((embedding) => embedding.values ?? []);
+    if (embeddings.length !== texts.length || embeddings.some((embedding) => embedding.length === 0)) {
+      throw new Error("Gemini returned incomplete tool-search embeddings");
+    }
+    logger.info("Gemini tool-search embeddings generated", {
+      model: geminiEmbeddingModel,
+      textCount: texts.length,
+      dimensions: embeddings[0]?.length,
+    });
+    return embeddings;
+  } catch (error) {
+    const details = describeError(error);
+    logger.warn("Gemini tool-search embeddings failed", {
+      model: geminiEmbeddingModel,
+      textCount: texts.length,
+      ...details,
+    });
+    throw new AIProviderError(details.message, "gemini", isRetryableMessage(details.message), details.httpCode);
+  }
+}
+
 /**
  * Only parts the patient may see. `part.thought` is Gemini's marker for chain
  * of thought; includeThoughts is off so these should never arrive, and they
@@ -213,6 +303,8 @@ async function* streamWithGemini(
   messages: AIMessage[],
   attachments: AIAttachmentContent[] = [],
   signal?: AbortSignal,
+  verifiedPatientContext?: string,
+  temporalContext?: TemporalContext,
 ): AsyncGenerator<string> {
   const startedAt = Date.now();
   const filter = createReasoningFilter();
@@ -238,7 +330,7 @@ async function* streamWithGemini(
       model: geminiModel,
       contents,
       config: {
-        systemInstruction: MEDICAL_SYSTEM_PROMPT,
+        systemInstruction: getSystemPrompt(verifiedPatientContext, temporalContext ?? createTemporalContext()),
         maxOutputTokens: 1000,
         thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
         abortSignal: signal,
@@ -316,4 +408,4 @@ async function* streamWithGemini(
   }
 }
 
-export { generateWithGemini, streamWithGemini };
+export { embedTextWithGemini, generateWithGemini, generateToolCallsWithGemini, streamWithGemini };
